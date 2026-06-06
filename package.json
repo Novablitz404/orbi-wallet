@@ -1,0 +1,14 @@
+{
+  "name": "orbi-smart-wallet-v2",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "app",
+    "sdk"
+  ],
+  "scripts": {
+    "dev:app": "npm --workspace app run dev",
+    "build:app": "npm --workspace app run build",
+    "build:sdk": "npm --workspace sdk run build"
+  }
+}

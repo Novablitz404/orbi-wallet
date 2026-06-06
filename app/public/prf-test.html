@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PRF Test</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; padding: 2rem; max-width: 500px; margin: 0 auto; }
+    button { width: 100%; padding: 1rem; font-size: 1.1rem; background: #6366f1; color: white; border: none; border-radius: 12px; cursor: pointer; margin-top: 1rem; }
+    #result { margin-top: 2rem; padding: 1rem; border-radius: 12px; font-size: 0.95rem; word-break: break-all; }
+    .supported { background: #d1fae5; color: #065f46; }
+    .unsupported { background: #fee2e2; color: #991b1b; }
+    .waiting { background: #fef3c7; color: #92400e; }
+  </style>
+</head>
+<body>
+  <h2>WebAuthn PRF Test</h2>
+  <p>Tests whether your browser supports the PRF extension — required for passkey-derived G accounts.</p>
+
+  <button onclick="testPRF()">Test PRF Support</button>
+
+  <div id="result"></div>
+
+  <script>
+    async function testPRF() {
+      const result = document.getElementById('result');
+      result.className = 'waiting';
+      result.textContent = 'Waiting for biometric prompt...';
+
+      try {
+        const credential = await navigator.credentials.create({
+          publicKey: {
+            challenge: crypto.getRandomValues(new Uint8Array(32)),
+            rp: { name: 'PRF Test', id: location.hostname },
+            user: {
+              id: crypto.getRandomValues(new Uint8Array(16)),
+              name: 'prf-test',
+              displayName: 'PRF Test User',
+            },
+            pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+            authenticatorSelection: {
+              userVerification: 'required',
+              residentKey: 'preferred',
+            },
+            extensions: {
+              prf: { eval: { first: new TextEncoder().encode('orbi-prf-test-v1') } },
+            },
+          },
+        });
+
+        const prf = credential.getClientExtensionResults().prf;
+
+        if (prf?.enabled && prf?.results?.first) {
+          const bytes = new Uint8Array(prf.results.first);
+          result.className = 'supported';
+          result.innerHTML = `
+            <strong>✅ PRF SUPPORTED</strong><br><br>
+            PRF output (32 bytes):<br>
+            <code>${Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')}</code><br><br>
+            Browser: ${navigator.userAgent.includes('Safari') && !navigator.userAgent.includes('Chrome') ? 'Safari' : 'Chrome/Other'}<br>
+            Platform: ${navigator.platform || navigator.userAgentData?.platform || 'unknown'}
+          `;
+        } else {
+          result.className = 'unsupported';
+          result.innerHTML = `
+            <strong>❌ PRF NOT SUPPORTED</strong><br><br>
+            The credential was created but the browser did not return a PRF output.<br><br>
+            prf result: ${JSON.stringify(prf)}
+          `;
+        }
+      } catch (err) {
+        result.className = 'unsupported';
+        result.innerHTML = `<strong>❌ ERROR</strong><br><br>${err.message}`;
+      }
+    }
+  </script>
+</body>
+</html>
