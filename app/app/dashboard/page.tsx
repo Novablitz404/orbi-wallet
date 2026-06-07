@@ -64,11 +64,22 @@ const XLM_SEND_TOKEN: SendToken = {
 interface SwapQuote {
   destAmount: string;
   path: Asset[];
+  // Orbi's service fee for this swap, in XLM — see computeSwapFeeXLM.
+  feeXLM: string;
 }
 
 // Tolerance applied to a quote's destination amount to compute `destMin` —
 // protects the swap from failing if the price moves between quote and submission.
 const SWAP_SLIPPAGE = 0.01;
+
+// Orbi's swap service fee: 1% of the swap's XLM-equivalent value, paid in XLM
+// to the treasury alongside the swap — see computeSwapFeeXLM.
+const SWAP_FEE_RATE = 0.01;
+const TREASURY_ADDRESS = 'GAVMCJ4TTPRQ24R5YYCT7ELINDB2WIXHIIWUEC3UCC7NRTJYPDTE54XL';
+
+// Stellar locks this much XLM as a reserve for every new trustline an account
+// opens — it isn't spent or sent anywhere, just no longer freely spendable.
+const TRUSTLINE_RESERVE_XLM = '0.5';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -299,6 +310,19 @@ export default function DashboardPage() {
     return token.code === 'XLM' || !token.issuer ? 'native' : `${token.code}:${token.issuer}`;
   }
 
+  // XLM never needs a trustline; for issued assets, tokenBalances only carries
+  // an entry when the account already holds a trustline to that asset (see the
+  // account-loading effect above) — its absence means one must be created.
+  function needsTrustline(token: SendToken): boolean {
+    return token.code !== 'XLM' && !!token.issuer && tokenBalances[token.sacId] === undefined;
+  }
+
+  // Trims an XLM amount to its meaningful digits — fees are too small for fmt()'s
+  // 2-decimal rounding (which would just show "0.00").
+  function fmtXLM(n: number): string {
+    return n.toFixed(7).replace(/0+$/, '').replace(/\.$/, '');
+  }
+
   function setMax() {
     if (selectedToken.code !== 'XLM' || !xlmBalance) {
       setSendAmount(getSelectedBalance());
@@ -348,7 +372,7 @@ export default function DashboardPage() {
   // Asks Horizon's native-DEX path-finder for the best route between two
   // assets — covers both order-book and liquidity-pool liquidity in one call.
   // Returns null when no route exists (e.g. the pair has no shared liquidity).
-  async function fetchSwapQuote(from: SendToken, to: SendToken, amount: string): Promise<SwapQuote | null> {
+  async function fetchPathQuote(from: SendToken, to: SendToken, amount: string): Promise<{ destAmount: string; path: Asset[] } | null> {
     const fromAsset = toAsset(from);
     const params = new URLSearchParams({
       source_amount: amount,
@@ -377,6 +401,32 @@ export default function DashboardPage() {
       destAmount: best.destination_amount,
       path: best.path.map(p => p.asset_type === 'native' ? Asset.native() : new Asset(p.asset_code!, p.asset_issuer!)),
     };
+  }
+
+  // Orbi's 1% service fee, expressed in XLM and priced off the swap's own DEX
+  // route rather than an external feed: if XLM is already one leg of the swap
+  // we read the fee straight off that amount; otherwise we ask the path-finder
+  // for the XLM-equivalent of what's being sent and take 1% of that.
+  async function computeSwapFeeXLM(from: SendToken, to: SendToken, fromAmount: string, destAmount: string): Promise<string | null> {
+    let xlmValue: number;
+    if (from.code === 'XLM') {
+      xlmValue = parseFloat(fromAmount);
+    } else if (to.code === 'XLM') {
+      xlmValue = parseFloat(destAmount);
+    } else {
+      const xlmRoute = await fetchPathQuote(from, XLM_SEND_TOKEN, fromAmount);
+      if (!xlmRoute) return null;
+      xlmValue = parseFloat(xlmRoute.destAmount);
+    }
+    return (xlmValue * SWAP_FEE_RATE).toFixed(7);
+  }
+
+  async function fetchSwapQuote(from: SendToken, to: SendToken, amount: string): Promise<SwapQuote | null> {
+    const quote = await fetchPathQuote(from, to, amount);
+    if (!quote) return null;
+    const feeXLM = await computeSwapFeeXLM(from, to, amount, quote.destAmount);
+    if (feeXLM == null) return null;
+    return { destAmount: quote.destAmount, path: quote.path, feeXLM };
   }
 
   function flipSwapTokens() {
@@ -492,7 +542,11 @@ export default function DashboardPage() {
 
   // A swap on Stellar's native DEX is just a path payment to yourself: you
   // send `swapFromToken` and the DEX converts it along the quoted path,
-  // crediting `swapToToken` — same build/sign/submit pipeline as a send.
+  // crediting `swapToToken`. We bundle in two more operations when needed —
+  // a trustline for a destination asset the wallet doesn't hold yet, and
+  // Orbi's service fee to the treasury — all atomic in one signed transaction
+  // (everything lands together, or nothing does). Same build/sign/submit
+  // pipeline as a send.
   async function handleSwapConfirm() {
     if (!walletAddress || !swapToToken || !swapQuote) return;
 
@@ -502,20 +556,31 @@ export default function DashboardPage() {
       // destMin guards against the rate moving between quote and execution —
       // the swap simply fails rather than executing at a worse-than-expected price.
       const destMin = (parseFloat(swapQuote.destAmount) * (1 - SWAP_SLIPPAGE)).toFixed(7);
-      const tx = new TransactionBuilder(account, {
+      const builder = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(Operation.pathPaymentStrictSend({
-          sendAsset: toAsset(swapFromToken),
-          sendAmount: swapFromAmount,
-          destination: walletAddress,
-          destAsset: toAsset(swapToToken),
-          destMin,
-          path: swapQuote.path,
-        }))
-        .setTimeout(30)
-        .build();
+      });
+
+      if (needsTrustline(swapToToken)) {
+        builder.addOperation(Operation.changeTrust({ asset: toAsset(swapToToken) }));
+      }
+
+      builder.addOperation(Operation.pathPaymentStrictSend({
+        sendAsset: toAsset(swapFromToken),
+        sendAmount: swapFromAmount,
+        destination: walletAddress,
+        destAsset: toAsset(swapToToken),
+        destMin,
+        path: swapQuote.path,
+      }));
+
+      builder.addOperation(Operation.payment({
+        destination: TREASURY_ADDRESS,
+        asset: Asset.native(),
+        amount: swapQuote.feeXLM,
+      }));
+
+      const tx = builder.setTimeout(30).build();
 
       const { signedXdr } = await orbi.signTransaction({ xdr: tx.toXDR(), walletAddress });
 
@@ -543,6 +608,17 @@ export default function DashboardPage() {
 
   const xlmFloat = xlmBalance ? parseFloat(xlmBalance) : 0;
   const xlmUsd = xlmPrice != null ? xlmFloat * xlmPrice : null;
+
+  // Swap fee breakdown for the preview panel — the transaction always bundles
+  // a path payment + Orbi's treasury-fee payment (2 ops), plus a changeTrust
+  // op (a 3rd) when the destination asset needs a new trustline. "Network fee"
+  // shown to the user combines the real per-op network cost with Orbi's cut;
+  // the trustline reserve is shown separately since it's locked, not spent.
+  const swapNeedsTrustline = swapToToken ? needsTrustline(swapToToken) : false;
+  const swapOpCount = 2 + (swapNeedsTrustline ? 1 : 0);
+  const swapNetworkFeeXLM = swapQuote
+    ? swapOpCount * (Number(BASE_FEE) / 1e7) + parseFloat(swapQuote.feeXLM)
+    : null;
 
   // Per-token portfolio: balance, price (where known), and USD value.
   const tokenEntries = getDisplayTokens().map(t => {
@@ -1303,8 +1379,14 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Network fee</span>
-                  <span className="text-white">{SEND_FEE_XLM} XLM</span>
+                  <span className="text-white">{swapNetworkFeeXLM != null ? fmtXLM(swapNetworkFeeXLM) : '—'} XLM</span>
                 </div>
+                {swapNeedsTrustline && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-400">Trustline fee</span>
+                    <span className="text-white">{TRUSTLINE_RESERVE_XLM} XLM</span>
+                  </div>
+                )}
               </div>
             </div>
 
