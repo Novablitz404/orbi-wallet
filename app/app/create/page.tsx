@@ -6,11 +6,11 @@ import BackButton from '../../components/BackButton';
 import { saveWallet } from '../../lib/storage';
 import { registerPRFWallet } from '../../lib/prf-wallet';
 
-type Step = 'email' | 'passkey' | 'done';
+type Step = 'passkey' | 'done';
 
 export default function CreateWalletPage() {
   const router = useRouter();
-  const [step, setStep] = useState<Step>('email');
+  const [step, setStep] = useState<Step>('passkey');
   const [popupMode, setPopupMode] = useState(false);
   const [channelId, setChannelId] = useState('');
 
@@ -22,22 +22,19 @@ export default function CreateWalletPage() {
     }
   }, []);
 
-  const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [walletAddress, setWalletAddress] = useState('');
 
   async function handleCreate() {
-    if (!email.trim()) return;
     setError('');
     setLoading(true);
     try {
-      const { credentialId, gAddress } = await registerPRFWallet(email);
+      const { credentialId, gAddress } = await registerPRFWallet();
       const walletData = {
         walletAddress: gAddress,
         credentialId,
         passkeyId: '',
-        email,
         walletType: 'prf-g' as const,
       };
       saveWallet(walletData);
@@ -82,39 +79,11 @@ export default function CreateWalletPage() {
       <div className="w-full max-w-sm">
         <div className="mb-8"><BackButton href="/" /></div>
 
-        {/* ── Step: email ── */}
-        {step === 'email' && (
-          <div className="flex flex-col gap-6">
-            <div>
-              <h2 className="text-2xl font-bold text-white">Create your wallet</h2>
-              <p className="text-slate-400 text-sm mt-1">Enter your email. Used as your passkey label.</p>
-            </div>
-
-            <input
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && email.trim() && setStep('passkey')}
-              autoFocus
-              className="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
-            />
-
-            <button
-              onClick={() => email.trim() && setStep('passkey')}
-              disabled={!email.trim()}
-              className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Continue
-            </button>
-          </div>
-        )}
-
         {/* ── Step: passkey ── */}
         {step === 'passkey' && (
           <div className="flex flex-col gap-6">
             <div>
-              <h2 className="text-2xl font-bold text-white">Secure with passkey</h2>
+              <h2 className="text-2xl font-bold text-white">Create your wallet</h2>
               <p className="text-slate-400 text-sm mt-1">
                 Your device will generate a passkey. No seed phrase — your wallet address is derived from it.
               </p>
@@ -127,28 +96,19 @@ export default function CreateWalletPage() {
                 </svg>
               </div>
               <p className="text-slate-300 text-sm text-center">
-                Creating wallet for<br />
-                <span className="text-white font-medium">{email}</span>
+                Face ID, Touch ID, or your device&apos;s screen lock secures your wallet.
               </p>
             </div>
 
             {error && <p className="text-red-400 text-sm">{error}</p>}
 
-            <div className="flex gap-3">
-              <button
-                onClick={() => { setStep('email'); setError(''); }}
-                className="flex-1 py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-semibold transition-colors"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleCreate}
-                disabled={loading}
-                className="flex-1 py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors disabled:opacity-50"
-              >
-                {loading ? 'Preparing…' : 'Create with passkey'}
-              </button>
-            </div>
+            <button
+              onClick={handleCreate}
+              disabled={loading}
+              className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors disabled:opacity-50"
+            >
+              {loading ? 'Preparing…' : 'Create with passkey'}
+            </button>
           </div>
         )}
 

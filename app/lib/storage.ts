@@ -4,7 +4,6 @@ export interface StoredWallet {
   walletAddress: string;
   credentialId: string;
   passkeyId: string;
-  email: string;
   walletType?: 'smart' | 'prf-g';
 }
 

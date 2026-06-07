@@ -72,7 +72,6 @@ export class OrbiClient {
         walletAddress: msg.address as string,
         credentialId: (msg.credentialId as string | undefined) ?? '',
         passkeyId: (msg.passkeyId as string | undefined) ?? '',
-        email: (msg.email as string | undefined) ?? '',
       }),
     });
 

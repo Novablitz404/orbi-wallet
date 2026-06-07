@@ -34,7 +34,7 @@ export default function SignInPage() {
       // New device — verify this G address is activated on Stellar before adopting it.
       const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
       if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
-      saveWallet({ walletAddress: gAddress, credentialId, passkeyId: '', email: '', walletType: 'prf-g' });
+      saveWallet({ walletAddress: gAddress, credentialId, passkeyId: '', walletType: 'prf-g' });
       router.replace('/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign in failed');

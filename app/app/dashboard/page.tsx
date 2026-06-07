@@ -393,10 +393,9 @@ export default function DashboardPage() {
                     <div className="flex items-center gap-3">
                       <img src={dicebearUrl(wallet.walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
                       <div>
-                        <p className="text-white text-sm font-medium truncate max-w-[120px]">{wallet.email}</p>
-                        <button onClick={copyAddress} className="flex items-center gap-1 text-slate-500 text-xs hover:text-slate-300 transition-colors">
+                        <button onClick={copyAddress} className="flex items-center gap-1.5 text-white text-sm font-medium hover:text-slate-300 transition-colors">
                           <span className="font-mono">{truncate(wallet.walletAddress)}</span>
-                          <span>{copied ? '✓' : '⎘'}</span>
+                          <span className="text-slate-500">{copied ? '✓' : '⎘'}</span>
                         </button>
                       </div>
                     </div>
@@ -435,10 +434,9 @@ export default function DashboardPage() {
                     <div className="flex items-center gap-3">
                       <img src={dicebearUrl(wallet.walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
                       <div>
-                        <p className="text-white text-sm font-medium truncate max-w-[120px]">{wallet.email}</p>
-                        <button onClick={copyAddress} className="flex items-center gap-1 text-slate-500 text-xs hover:text-slate-300 transition-colors">
+                        <button onClick={copyAddress} className="flex items-center gap-1.5 text-white text-sm font-medium hover:text-slate-300 transition-colors">
                           <span className="font-mono">{truncate(wallet.walletAddress)}</span>
-                          <span>{copied ? '✓' : '⎘'}</span>
+                          <span className="text-slate-500">{copied ? '✓' : '⎘'}</span>
                         </button>
                       </div>
                     </div>

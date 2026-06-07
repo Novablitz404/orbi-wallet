@@ -9,7 +9,6 @@ export interface ConnectedWallet {
   walletAddress: string;
   credentialId: string;
   passkeyId: string;
-  email: string;
 }
 
 export interface SignResult {

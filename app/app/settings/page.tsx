@@ -41,7 +41,6 @@ export default function SettingsPage() {
       <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-4 mb-4">
         <p className="text-slate-400 text-xs mb-1">Your wallet</p>
         <p className="text-white font-mono text-xs break-all">{wallet.walletAddress}</p>
-        <p className="text-slate-500 text-xs mt-1">{wallet.email}</p>
       </div>
 
       {/* Actions */}

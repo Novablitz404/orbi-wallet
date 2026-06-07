@@ -41,15 +41,18 @@ export interface PRFWalletCredential {
  * Creates a passkey with PRF extension, derives an Ed25519 seed via HKDF,
  * and returns the G address (public key). The private key never leaves memory.
  */
-export async function registerPRFWallet(username: string): Promise<PRFWalletCredential> {
+export async function registerPRFWallet(): Promise<PRFWalletCredential> {
   const credential = await navigator.credentials.create({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       rp: { name: 'Orbi Wallet', id: getRpId() },
       user: {
-        id: new TextEncoder().encode(username),
-        name: username,
-        displayName: username,
+        // Random per-credential handle — must be unique, or platforms with
+        // discoverable credentials (iCloud Keychain, etc.) will overwrite an
+        // existing passkey instead of creating a new one.
+        id: crypto.getRandomValues(new Uint8Array(16)),
+        name: 'Orbi Wallet',
+        displayName: 'Orbi Wallet',
       },
       pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
       authenticatorSelection: {

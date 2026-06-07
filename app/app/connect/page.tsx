@@ -74,7 +74,7 @@ export default function ConnectPage() {
     }
 
     // Popup flow — BroadcastChannel + postMessage (for dApps using SDK)
-    const msg = { type: 'orbi_connected', address: w.walletAddress, credentialId: w.credentialId, passkeyId: w.passkeyId, email: w.email };
+    const msg = { type: 'orbi_connected', address: w.walletAddress, credentialId: w.credentialId, passkeyId: w.passkeyId };
     if (c) {
       const bc = new BroadcastChannel(c);
       bc.postMessage(msg);
@@ -100,7 +100,7 @@ export default function ConnectPage() {
       } else {
         const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
         if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
-        w = { walletAddress: gAddress, credentialId, passkeyId: '', email: '', walletType: 'prf-g' };
+        w = { walletAddress: gAddress, credentialId, passkeyId: '', walletType: 'prf-g' };
       }
       saveWallet(w);
 
