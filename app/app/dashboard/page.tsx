@@ -26,7 +26,7 @@ const SEND_FEE_XLM = '0.00001';
 function truncate(addr: string) { return `${addr.slice(0, 6)}...${addr.slice(-4)}`; }
 function fmt(n: number): string { return parseFloat(n.toFixed(2)).toString(); }
 
-type PanelStep = 'send-form' | 'send-preview' | 'receive';
+type PanelStep = 'send-form' | 'send-preview' | 'receive' | 'swap-form' | 'swap-preview';
 
 interface TxRecord {
   id: string;
@@ -61,6 +61,15 @@ const XLM_SEND_TOKEN: SendToken = {
   code: 'XLM', name: 'Stellar', sacId: NATIVE_SAC_ID, decimals: 7, iconSrc: XLM_ICON,
 };
 
+interface SwapQuote {
+  destAmount: string;
+  path: Asset[];
+}
+
+// Tolerance applied to a quote's destination amount to compute `destMin` —
+// protects the swap from failing if the price moves between quote and submission.
+const SWAP_SLIPPAGE = 0.01;
+
 export default function DashboardPage() {
   const router = useRouter();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
@@ -74,10 +83,10 @@ export default function DashboardPage() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const mobileDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Send/Receive panel
+  // Send/Receive/Swap panel
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelStep, setPanelStep] = useState<PanelStep>('send-form');
-  const [panelTab, setPanelTab] = useState<'send' | 'receive'>('send');
+  const [panelTab, setPanelTab] = useState<'send' | 'receive' | 'swap'>('send');
   const [sendTo, setSendTo] = useState('');
   const [sendAmount, setSendAmount] = useState('');
   const [sendError, setSendError] = useState('');
@@ -89,6 +98,21 @@ export default function DashboardPage() {
   // preview so Confirm can build the XDR and open the approval popup with no
   // visible delay — see handlePreview/handleConfirm.
   const sendAccountRef = useRef<Promise<Account> | null>(null);
+
+  // Swap panel — quotes come live from Horizon's path-finding (no fixed pair
+  // list, since which pairs actually have liquidity varies by network/time —
+  // see fetchSwapQuote/handleSwapPreview).
+  const [swapFromToken, setSwapFromToken] = useState<SendToken>(XLM_SEND_TOKEN);
+  const [swapToToken, setSwapToToken] = useState<SendToken | null>(null);
+  const [swapFromAmount, setSwapFromAmount] = useState('');
+  const [swapQuote, setSwapQuote] = useState<SwapQuote | null>(null);
+  const [swapQuoteLoading, setSwapQuoteLoading] = useState(false);
+  const [swapError, setSwapError] = useState('');
+  const [swapping, setSwapping] = useState(false);
+  const [swapTokenSelector, setSwapTokenSelector] = useState<'from' | 'to' | null>(null);
+  // Guards against a stale, slower quote response clobbering a newer one.
+  const swapQuoteSeq = useRef(0);
+  const swapAccountRef = useRef<Promise<Account> | null>(null);
 
   // Toast notification for tx confirmation
   type Toast = { type: 'pending' | 'success' | 'error'; title: string; message: string; txHash?: string };
@@ -241,22 +265,38 @@ export default function DashboardPage() {
     router.replace('/');
   }
 
-  function openPanel(tab: 'send' | 'receive') {
+  function openPanel(tab: 'send' | 'receive' | 'swap') {
     setPanelTab(tab);
-    setPanelStep(tab === 'send' ? 'send-form' : 'receive');
+    setPanelStep(tab === 'send' ? 'send-form' : tab === 'swap' ? 'swap-form' : 'receive');
     setSendTo(''); setSendAmount(''); setSendError('');
     setSelectedToken(XLM_SEND_TOKEN);
     setTokenSelectorOpen(false);
+    setSwapFromToken(XLM_SEND_TOKEN); setSwapToToken(null);
+    setSwapFromAmount(''); resetSwapQuote();
+    setSwapTokenSelector(null);
     setPanelOpen(true);
   }
 
-  // Derive selected token's available balance in human units
-  function getSelectedBalance(): string {
-    if (selectedToken.code === 'XLM') {
+  // A token's available balance in human units
+  function tokenBalance(token: SendToken): string {
+    if (token.code === 'XLM') {
       return xlmBalance ? fmt(parseFloat(xlmBalance)) : '0';
     }
-    const raw = tokenBalances[selectedToken.sacId] ?? '0';
-    return fmt(Number(BigInt(raw)) / 10 ** selectedToken.decimals);
+    const raw = tokenBalances[token.sacId] ?? '0';
+    return fmt(Number(BigInt(raw)) / 10 ** token.decimals);
+  }
+
+  function getSelectedBalance(): string {
+    return tokenBalance(selectedToken);
+  }
+
+  // Native XLM has no issuer; everything else is a classic credit asset.
+  function toAsset(token: SendToken): Asset {
+    return token.code === 'XLM' || !token.issuer ? Asset.native() : new Asset(token.code, token.issuer);
+  }
+
+  function assetCanonical(token: SendToken): string {
+    return token.code === 'XLM' || !token.issuer ? 'native' : `${token.code}:${token.issuer}`;
   }
 
   function setMax() {
@@ -291,12 +331,97 @@ export default function DashboardPage() {
     return tokens;
   }
 
+  // Swap destination candidates: any curated token other than whichever is
+  // selected as the source — the user doesn't need to already hold it.
+  function getSwapToTokens(): SendToken[] {
+    const all: SendToken[] = [XLM_SEND_TOKEN, ...getDisplayTokens()];
+    return all.filter(t => t.sacId !== swapFromToken.sacId);
+  }
+
   async function fetchSendAccount(addr: string): Promise<Account> {
     const accountRes = await fetch(`${HORIZON_URL}/accounts/${addr}`);
     if (!accountRes.ok) throw new Error('Account not found on Stellar — deposit 1 XLM first');
     const accountData = await accountRes.json() as { sequence: string };
     return new Account(addr, accountData.sequence);
   }
+
+  // Asks Horizon's native-DEX path-finder for the best route between two
+  // assets — covers both order-book and liquidity-pool liquidity in one call.
+  // Returns null when no route exists (e.g. the pair has no shared liquidity).
+  async function fetchSwapQuote(from: SendToken, to: SendToken, amount: string): Promise<SwapQuote | null> {
+    const fromAsset = toAsset(from);
+    const params = new URLSearchParams({
+      source_amount: amount,
+      destination_assets: assetCanonical(to),
+    });
+    if (fromAsset.isNative()) {
+      params.set('source_asset_type', 'native');
+    } else {
+      params.set('source_asset_type', fromAsset.code.length > 4 ? 'credit_alphanum12' : 'credit_alphanum4');
+      params.set('source_asset_code', fromAsset.code);
+      params.set('source_asset_issuer', fromAsset.issuer!);
+    }
+
+    const res = await fetch(`${HORIZON_URL}/paths/strict-send?${params.toString()}`);
+    if (!res.ok) throw new Error('Failed to fetch swap quote');
+    const data = await res.json() as {
+      _embedded: { records: Array<{
+        destination_amount: string;
+        path: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string }>;
+      }> };
+    };
+
+    const best = data._embedded.records[0];
+    if (!best) return null;
+    return {
+      destAmount: best.destination_amount,
+      path: best.path.map(p => p.asset_type === 'native' ? Asset.native() : new Asset(p.asset_code!, p.asset_issuer!)),
+    };
+  }
+
+  function flipSwapTokens() {
+    if (!swapToToken) return;
+    setSwapFromToken(swapToToken);
+    setSwapToToken(swapFromToken);
+    setSwapFromAmount('');
+    resetSwapQuote();
+  }
+
+  // Resets the live quote — called from the input handlers below whenever the
+  // pair or amount changes, so stale numbers never linger on screen.
+  function resetSwapQuote() {
+    ++swapQuoteSeq.current; // invalidate any in-flight fetch
+    setSwapQuote(null);
+    setSwapQuoteLoading(false);
+    setSwapError('');
+  }
+
+  // Live quote: re-fetched (debounced) whenever the pair or amount changes.
+  // The seq ref discards a slow response that's been superseded by a newer one
+  // (e.g. by resetSwapQuote, or by this same effect re-running before it resolves).
+  useEffect(() => {
+    if (!swapToToken || !swapFromAmount || parseFloat(swapFromAmount) <= 0) return;
+
+    const seq = ++swapQuoteSeq.current;
+    const t = setTimeout(() => {
+      setSwapQuoteLoading(true);
+      setSwapError('');
+      fetchSwapQuote(swapFromToken, swapToToken, swapFromAmount)
+        .then(quote => {
+          if (swapQuoteSeq.current !== seq) return;
+          setSwapQuote(quote);
+          if (!quote) setSwapError('No swap route available for this pair');
+        })
+        .catch(() => {
+          if (swapQuoteSeq.current === seq) setSwapError('Failed to fetch quote');
+        })
+        .finally(() => {
+          if (swapQuoteSeq.current === seq) setSwapQuoteLoading(false);
+        });
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [swapFromToken, swapToToken, swapFromAmount]);
 
   function handlePreview() {
     if (!walletAddress || !sendTo.trim() || !sendAmount) return;
@@ -358,6 +483,64 @@ export default function DashboardPage() {
     }
   }
 
+  function handleSwapPreview() {
+    if (!walletAddress || !swapToToken || !swapFromAmount || !swapQuote) return;
+    setSwapError('');
+    setPanelStep('swap-preview');
+    swapAccountRef.current = fetchSendAccount(walletAddress);
+  }
+
+  // A swap on Stellar's native DEX is just a path payment to yourself: you
+  // send `swapFromToken` and the DEX converts it along the quoted path,
+  // crediting `swapToToken` — same build/sign/submit pipeline as a send.
+  async function handleSwapConfirm() {
+    if (!walletAddress || !swapToToken || !swapQuote) return;
+
+    setSwapping(true);
+    try {
+      const account = await (swapAccountRef.current ?? fetchSendAccount(walletAddress));
+      // destMin guards against the rate moving between quote and execution —
+      // the swap simply fails rather than executing at a worse-than-expected price.
+      const destMin = (parseFloat(swapQuote.destAmount) * (1 - SWAP_SLIPPAGE)).toFixed(7);
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(Operation.pathPaymentStrictSend({
+          sendAsset: toAsset(swapFromToken),
+          sendAmount: swapFromAmount,
+          destination: walletAddress,
+          destAsset: toAsset(swapToToken),
+          destMin,
+          path: swapQuote.path,
+        }))
+        .setTimeout(30)
+        .build();
+
+      const { signedXdr } = await orbi.signTransaction({ xdr: tx.toXDR(), walletAddress });
+
+      setPanelOpen(false);
+      swapAccountRef.current = null;
+
+      const submitRes = await fetch(`${HORIZON_URL}/transactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ tx: signedXdr }),
+      });
+      const submitData = await submitRes.json() as { hash?: string; extras?: { result_codes?: unknown }; title?: string };
+      if (!submitData.hash) {
+        throw new Error(JSON.stringify(submitData.extras?.result_codes ?? submitData.title ?? 'Submit failed'));
+      }
+
+      setTransactions(null);
+      setToast({ type: 'success', title: 'Swapped!', message: 'Your swap was submitted to the network.', txHash: submitData.hash });
+    } catch (e: unknown) {
+      setToast({ type: 'error', title: 'Swap failed', message: e instanceof Error ? e.message : 'Failed to swap' });
+    } finally {
+      setSwapping(false);
+    }
+  }
+
   const xlmFloat = xlmBalance ? parseFloat(xlmBalance) : 0;
   const xlmUsd = xlmPrice != null ? xlmFloat * xlmPrice : null;
 
@@ -405,6 +588,9 @@ export default function DashboardPage() {
           <div className="flex flex-col gap-1">
             <button onClick={() => openPanel('send')} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 text-sm transition-colors text-left">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>Send
+            </button>
+            <button onClick={() => openPanel('swap')} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 text-sm transition-colors text-left">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4"/></svg>Swap
             </button>
             <button onClick={() => openPanel('receive')} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 text-sm transition-colors text-left">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>Receive
@@ -507,6 +693,7 @@ export default function DashboardPage() {
 
           <div className="md:hidden flex gap-3 mb-6">
             <button onClick={() => openPanel('send')} className="flex-1 py-3 rounded-2xl bg-white text-slate-900 font-semibold text-sm">Send</button>
+            <button onClick={() => openPanel('swap')} className="flex-1 py-3 rounded-2xl bg-slate-800 border border-slate-700 text-white font-semibold text-sm">Swap</button>
             <button onClick={() => openPanel('receive')} className="flex-1 py-3 rounded-2xl bg-slate-800 border border-slate-700 text-white font-semibold text-sm">Receive</button>
           </div>
 
@@ -685,10 +872,26 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Mobile bottom nav - always in-flow at bottom of the flex column */}
-        <div className="md:hidden shrink-0 border-t border-slate-800 bg-[#020817] px-4 py-3 flex justify-around">
-          {[{ id: 'assets', label: 'Assets' }, { id: 'activity', label: 'Activity' }, { id: 'apps', label: 'Apps' }].map(({ id, label }) => (
-            <button key={id} onClick={() => setActiveNav(id)} className={`text-xs font-medium px-4 py-1.5 rounded-lg transition-colors ${activeNav === id ? 'text-white bg-slate-800' : 'text-slate-500'}`}>{label}</button>
+        {/* Mobile bottom nav - always in-flow at bottom of the flex column.
+            Stacked icon-over-label with a pill highlight on the active tab —
+            the standard native iOS/Android tab-bar pattern — plus safe-area
+            padding so it clears the home indicator on notched phones. */}
+        <div className="md:hidden shrink-0 border-t border-slate-800 bg-[#020817] px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex">
+          {[
+            { id: 'assets', label: 'Assets', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><circle cx="12" cy="12" r="9" strokeWidth={2}/><path strokeLinecap="round" strokeWidth={2} d="M12 6v6l4 2"/></svg> },
+            { id: 'activity', label: 'Activity', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg> },
+            { id: 'apps', label: 'Apps', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg> },
+          ].map(({ id, label, icon }) => (
+            <button
+              key={id}
+              onClick={() => setActiveNav(id)}
+              className={`flex-1 flex flex-col items-center gap-1 py-1 rounded-xl transition-colors ${activeNav === id ? 'text-white' : 'text-slate-500'}`}
+            >
+              <span className={`flex items-center justify-center w-10 h-8 rounded-full transition-colors ${activeNav === id ? 'bg-slate-800' : ''}`}>
+                {icon}
+              </span>
+              <span className="text-[11px] font-medium">{label}</span>
+            </button>
           ))}
         </div>
       </main>
@@ -709,6 +912,7 @@ export default function DashboardPage() {
               </button>
               <div className="flex gap-1 bg-slate-800 rounded-xl p-1">
                 <button onClick={() => { setPanelTab('send'); setPanelStep('send-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'send' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Send</button>
+                <button onClick={() => { setPanelTab('swap'); setPanelStep('swap-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'swap' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Swap</button>
                 <button onClick={() => { setPanelTab('receive'); setPanelStep('receive'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'receive' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Receive</button>
               </div>
               <div className="w-5" />
@@ -865,6 +1069,251 @@ export default function DashboardPage() {
               </button>
               <button onClick={handleConfirm} disabled={sending} className="flex-1 py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-semibold transition-colors flex items-center justify-center gap-2">
                 {sending ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                    Confirm in popup…
+                  </>
+                ) : 'Confirm'}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ── Swap form ── */}
+        {panelStep === 'swap-form' && (
+          <>
+            <div className="flex items-center justify-between p-5 border-b border-slate-800">
+              <button onClick={() => setPanelOpen(false)} className="text-slate-400 hover:text-white transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+              <div className="flex gap-1 bg-slate-800 rounded-xl p-1">
+                <button onClick={() => { setPanelTab('send'); setPanelStep('send-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'send' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Send</button>
+                <button onClick={() => { setPanelTab('swap'); setPanelStep('swap-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'swap' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Swap</button>
+                <button onClick={() => { setPanelTab('receive'); setPanelStep('receive'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'receive' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Receive</button>
+              </div>
+              <div className="w-5" />
+            </div>
+
+            <div className="flex-1 flex flex-col p-5 gap-2 overflow-y-auto">
+              {/* You pay */}
+              <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 p-4 relative">
+                <p className="text-slate-500 text-xs mb-2">You pay</p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    value={swapFromAmount}
+                    onChange={e => { setSwapFromAmount(e.target.value); resetSwapQuote(); }}
+                    placeholder="0"
+                    className="flex-1 bg-transparent text-3xl font-bold text-white outline-none placeholder-slate-700 w-0"
+                  />
+                  <button
+                    onClick={() => setSwapTokenSelector(o => o === 'from' ? null : 'from')}
+                    className="flex items-center gap-2 pl-2 pr-3 py-2 rounded-xl bg-slate-700/50 hover:bg-slate-700 transition-colors shrink-0"
+                  >
+                    <div className="w-6 h-6 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center">
+                      <img src={swapFromToken.iconSrc} alt={swapFromToken.code} className="w-full h-full object-cover"
+                        onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(swapFromToken.code); }} />
+                    </div>
+                    <span className="text-white text-sm font-medium">{swapFromToken.code}</span>
+                    <svg className={`w-3.5 h-3.5 text-slate-500 transition-transform ${swapTokenSelector === 'from' ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
+                  </button>
+                </div>
+                <button onClick={() => { setSwapFromAmount(tokenBalance(swapFromToken)); resetSwapQuote(); }} className="text-slate-500 text-xs mt-2 hover:text-slate-300 transition-colors">
+                  {tokenBalance(swapFromToken)} {swapFromToken.code} available
+                </button>
+
+                {swapTokenSelector === 'from' && (
+                  <div className="absolute top-full mt-1 left-0 right-0 bg-slate-900 border border-slate-700/50 rounded-xl overflow-hidden shadow-xl z-20">
+                    {getAvailableTokens().map(token => (
+                      <button
+                        key={token.sacId}
+                        onClick={() => {
+                          setSwapFromToken(token);
+                          if (swapToToken?.sacId === token.sacId) setSwapToToken(null);
+                          setSwapFromAmount(''); setSwapTokenSelector(null);
+                          resetSwapQuote();
+                        }}
+                        className={`flex items-center gap-3 w-full px-4 py-3 hover:bg-slate-800 transition-colors text-left ${swapFromToken.sacId === token.sacId ? 'bg-slate-800/60' : ''}`}
+                      >
+                        <div className="w-7 h-7 rounded-full bg-slate-700 overflow-hidden flex-shrink-0">
+                          <img src={token.iconSrc} alt={token.code} className="w-full h-full object-cover"
+                            onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(token.code); }} />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-white text-sm font-medium">{token.name}</p>
+                          <p className="text-slate-500 text-xs">{token.code}</p>
+                        </div>
+                        {swapFromToken.sacId === token.sacId && (
+                          <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7"/></svg>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Flip */}
+              <div className="flex justify-center -my-2 z-10">
+                <button
+                  onClick={flipSwapTokens}
+                  disabled={!swapToToken}
+                  className="w-9 h-9 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4"/></svg>
+                </button>
+              </div>
+
+              {/* You receive */}
+              <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 p-4 relative">
+                <p className="text-slate-500 text-xs mb-2">You receive (estimated)</p>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 text-3xl font-bold text-white truncate">
+                    {swapQuoteLoading
+                      ? <span className="animate-pulse text-slate-600">···</span>
+                      : swapQuote ? fmt(parseFloat(swapQuote.destAmount)) : <span className="text-slate-700">0</span>}
+                  </div>
+                  <button
+                    onClick={() => setSwapTokenSelector(o => o === 'to' ? null : 'to')}
+                    className="flex items-center gap-2 pl-2 pr-3 py-2 rounded-xl bg-slate-700/50 hover:bg-slate-700 transition-colors shrink-0"
+                  >
+                    {swapToToken ? (
+                      <>
+                        <div className="w-6 h-6 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center">
+                          <img src={swapToToken.iconSrc} alt={swapToToken.code} className="w-full h-full object-cover"
+                            onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(swapToToken.code); }} />
+                        </div>
+                        <span className="text-white text-sm font-medium">{swapToToken.code}</span>
+                      </>
+                    ) : (
+                      <span className="text-white text-sm font-medium">Select token</span>
+                    )}
+                    <svg className={`w-3.5 h-3.5 text-slate-500 transition-transform ${swapTokenSelector === 'to' ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
+                  </button>
+                </div>
+
+                {swapTokenSelector === 'to' && (
+                  <div className="absolute top-full mt-1 left-0 right-0 bg-slate-900 border border-slate-700/50 rounded-xl overflow-hidden shadow-xl z-20">
+                    {getSwapToTokens().map(token => (
+                      <button
+                        key={token.sacId}
+                        onClick={() => { setSwapToToken(token); setSwapTokenSelector(null); resetSwapQuote(); }}
+                        className={`flex items-center gap-3 w-full px-4 py-3 hover:bg-slate-800 transition-colors text-left ${swapToToken?.sacId === token.sacId ? 'bg-slate-800/60' : ''}`}
+                      >
+                        <div className="w-7 h-7 rounded-full bg-slate-700 overflow-hidden flex-shrink-0">
+                          <img src={token.iconSrc} alt={token.code} className="w-full h-full object-cover"
+                            onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(token.code); }} />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-white text-sm font-medium">{token.name}</p>
+                          <p className="text-slate-500 text-xs">{token.code}</p>
+                        </div>
+                        {swapToToken?.sacId === token.sacId && (
+                          <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7"/></svg>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Rate */}
+              {swapQuote && swapToToken && !swapQuoteLoading && parseFloat(swapFromAmount) > 0 && (
+                <p className="text-slate-500 text-xs px-1">
+                  1 {swapFromToken.code} ≈ {fmt(parseFloat(swapQuote.destAmount) / parseFloat(swapFromAmount))} {swapToToken.code}
+                </p>
+              )}
+
+              {swapError && <p className="text-red-400 text-xs px-1">{swapError}</p>}
+            </div>
+
+            <div className="p-5 border-t border-slate-800">
+              <button
+                onClick={handleSwapPreview}
+                disabled={!swapToToken || !swapFromAmount || !swapQuote || swapQuoteLoading}
+                className="w-full py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-900 font-semibold flex items-center justify-center gap-2 transition-colors"
+              >
+                Preview swap <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ── Swap preview / confirm ── */}
+        {panelStep === 'swap-preview' && swapToToken && swapQuote && (
+          <>
+            <div className="flex items-center gap-3 p-5 border-b border-slate-800">
+              <button onClick={() => setPanelStep('swap-form')} className="text-slate-400 hover:text-white transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
+              </button>
+              <h2 className="text-white font-semibold">Swap</h2>
+            </div>
+
+            <div className="flex-1 p-5 flex flex-col gap-5">
+              {/* From → To */}
+              <div className="flex flex-col items-center gap-1 py-4">
+                <div className="flex items-center gap-3 w-full justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center">
+                      <img src={swapFromToken.iconSrc} alt={swapFromToken.code} className="w-full h-full object-cover"
+                        onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(swapFromToken.code); }} />
+                    </div>
+                    <div>
+                      <p className="text-white font-medium">{swapFromToken.name}</p>
+                      <p className="text-slate-500 text-xs">{swapFromAmount} {swapFromToken.code}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <svg className="w-5 h-5 text-slate-600 my-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+
+                <div className="flex items-center gap-3 w-full justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center">
+                      <img src={swapToToken.iconSrc} alt={swapToToken.code} className="w-full h-full object-cover"
+                        onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(swapToToken.code); }} />
+                    </div>
+                    <div>
+                      <p className="text-white font-medium">{swapToToken.name}</p>
+                      <p className="text-slate-500 text-xs">≈ {fmt(parseFloat(swapQuote.destAmount))} {swapToToken.code}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Details */}
+              <div className="flex flex-col gap-3 border-t border-slate-800 pt-4">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Rate</span>
+                  <span className="text-white">1 {swapFromToken.code} ≈ {fmt(parseFloat(swapQuote.destAmount) / parseFloat(swapFromAmount))} {swapToToken.code}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Minimum received</span>
+                  <span className="text-white">{fmt(parseFloat(swapQuote.destAmount) * (1 - SWAP_SLIPPAGE))} {swapToToken.code}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Slippage tolerance</span>
+                  <span className="text-white">{(SWAP_SLIPPAGE * 100).toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Wallet used</span>
+                  <span className="text-white font-mono">{truncate(walletAddress)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Network fee</span>
+                  <span className="text-white">{SEND_FEE_XLM} XLM</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-slate-800 flex gap-3">
+              <button onClick={() => setPanelStep('swap-form')} disabled={swapping} className="flex-1 py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-semibold transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleSwapConfirm} disabled={swapping} className="flex-1 py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-semibold transition-colors flex items-center justify-center gap-2">
+                {swapping ? (
                   <>
                     <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
