@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server';
 
 const LANDING_URL = 'https://orbiwallet.xyz';
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const host = request.headers.get('host') ?? '';
   const { pathname } = request.nextUrl;
 
@@ -21,5 +21,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/', '/dashboard/:path*', '/send/:path*', '/receive/:path*', '/settings/:path*'],
+  matcher: [],
 };
