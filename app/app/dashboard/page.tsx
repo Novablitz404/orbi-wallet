@@ -181,7 +181,8 @@ export default function DashboardPage() {
       const data = await res.json() as {
         _embedded: { records: Array<{
           id: string; type: string; created_at: string; transaction_hash: string;
-          from?: string; to?: string; amount?: string; asset_type?: string;
+          from?: string; to?: string; amount?: string;
+          asset_type?: string; asset_code?: string; asset_issuer?: string;
           // create_account shapes its fields differently — it's how every G
           // wallet's very first (funding) transaction appears in this feed.
           account?: string; funder?: string; starting_balance?: string;
@@ -197,7 +198,7 @@ export default function DashboardPage() {
         return {
           id: r.id,
           direction: to === walletAddress ? 'incoming' : 'outgoing',
-          assetCode: (isCreateAccount || r.asset_type === 'native') ? 'XLM' : undefined,
+          assetCode: (isCreateAccount || r.asset_type === 'native') ? 'XLM' : r.asset_code,
           amount: amount ? String(Math.round(parseFloat(amount) * 1e7)) : undefined,
           to,
           from,
