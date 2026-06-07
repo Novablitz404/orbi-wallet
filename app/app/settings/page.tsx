@@ -2,33 +2,37 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { loadWallet, clearWallet, getConnections, removeConnection, type StoredConnection } from '../../lib/storage';
+import { getConnections, removeConnection, type StoredConnection } from '../../lib/storage';
+import { OrbiClient } from '@orbi-wallet/sdk';
 import BackButton from '../../components/BackButton';
+
+const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? 'testnet') as 'testnet' | 'mainnet';
+const orbi = new OrbiClient({ network: NETWORK });
 
 export default function SettingsPage() {
   const router = useRouter();
-  const [wallet, setWallet] = useState<ReturnType<typeof loadWallet>>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [connections, setConnections] = useState<StoredConnection[]>([]);
 
   useEffect(() => {
-    const w = loadWallet();
-    if (!w) { router.replace('/'); return; }
-    setWallet(w);
-    setConnections(getConnections(w.walletAddress));
+    const addr = orbi.getAddress();
+    if (!addr) { router.replace('/'); return; }
+    setWalletAddress(addr);
+    setConnections(getConnections(addr));
   }, [router]);
 
   function revoke(origin: string) {
-    if (!wallet) return;
-    removeConnection(wallet.walletAddress, origin);
+    if (!walletAddress) return;
+    removeConnection(walletAddress, origin);
     setConnections(prev => prev.filter(c => c.origin !== origin));
   }
 
-  function signOut() {
-    clearWallet();
-    window.location.href = 'https://keys.orbiwallet.xyz/signout?redirect=https://account.orbiwallet.xyz';
+  function disconnect() {
+    orbi.disconnect();
+    router.replace('/');
   }
 
-  if (!wallet) return null;
+  if (!walletAddress) return null;
 
   return (
     <main className="flex flex-col min-h-screen bg-[#020817] px-4">
@@ -40,26 +44,16 @@ export default function SettingsPage() {
       {/* Wallet info */}
       <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-4 mb-4">
         <p className="text-slate-400 text-xs mb-1">Your wallet</p>
-        <p className="text-white font-mono text-xs break-all">{wallet.walletAddress}</p>
+        <p className="text-white font-mono text-xs break-all">{walletAddress}</p>
       </div>
 
       {/* Actions */}
       <div className="rounded-2xl bg-slate-800/50 border border-slate-700 divide-y divide-slate-700/50 mb-4">
-        <a
-          href="https://account.orbiwallet.xyz"
-          className="flex items-center justify-between p-4 hover:bg-slate-700/30 transition-colors"
-        >
-          <div>
-            <p className="text-white text-sm font-medium">View wallet</p>
-            <p className="text-slate-500 text-xs">See your assets on account.orbiwallet.xyz</p>
-          </div>
-          <span className="text-slate-500 text-xs">↗</span>
-        </a>
         <button
-          onClick={signOut}
+          onClick={disconnect}
           className="w-full flex items-center justify-between p-4 hover:bg-slate-700/30 transition-colors text-left"
         >
-          <p className="text-red-400 text-sm font-medium">Sign out</p>
+          <p className="text-red-400 text-sm font-medium">Disconnect</p>
           <span className="text-slate-500">›</span>
         </button>
       </div>
