@@ -16,11 +16,15 @@ interface SignRequest {
 }
 
 // Summarise what a G wallet transaction is doing (for the review UI).
-function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: string[] } {
+function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: string[]; feeXlm: string | null } {
   try {
     const passphrase = network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
     const tx = TransactionBuilder.fromXDR(txXdr, passphrase);
-    if (!('operations' in tx)) return { lines: ['Sign transaction'] };
+    // tx.fee is the transaction's actual declared total fee (in stroops) —
+    // show what the user is really about to pay, not a guessed constant.
+    const feeXlm = (parseInt(tx.fee, 10) / 1e7).toString();
+
+    if (!('operations' in tx)) return { lines: ['Sign transaction'], feeXlm };
 
     const ops: string[] = (tx as { operations: Operation[] }).operations.map(op => {
       if (op.type === 'payment') {
@@ -39,9 +43,9 @@ function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: s
       return op.type;
     });
 
-    return { lines: ops };
+    return { lines: ops, feeXlm };
   } catch {
-    return { lines: ['Sign transaction'] };
+    return { lines: ['Sign transaction'], feeXlm: null };
   }
 }
 
@@ -55,6 +59,7 @@ export default function SignPage() {
   const [req, setReq] = useState<SignRequest | null>(null);
   const [error, setError] = useState('');
   const [gSummary, setGSummary] = useState<string[]>([]);
+  const [feeXlm, setFeeXlm] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -78,7 +83,9 @@ export default function SignPage() {
     }
 
     setReq(r);
-    setGSummary(summariseGTx(r.xdr, r.network).lines);
+    const summary = summariseGTx(r.xdr, r.network);
+    setGSummary(summary.lines);
+    setFeeXlm(summary.feeXlm);
     setStep('review');
   }, []);
 
@@ -179,7 +186,7 @@ export default function SignPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Fee</span>
-                <span className="text-white">0.00001 XLM</span>
+                <span className="text-white">{feeXlm !== null ? `${feeXlm} XLM` : '—'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Requested by</span>
