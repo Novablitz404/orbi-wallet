@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getConnections, removeConnection, type StoredConnection } from '../../lib/storage';
+import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import BackButton from '../../components/BackButton';
 
@@ -27,7 +28,8 @@ export default function SettingsPage() {
     setConnections(prev => prev.filter(c => c.origin !== origin));
   }
 
-  function disconnect() {
+  async function disconnect() {
+    await fullWalletSignOut();
     orbi.disconnect();
     router.replace('/');
   }

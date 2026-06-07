@@ -3,15 +3,14 @@
 import { useEffect } from 'react';
 import { clearWallet } from '../../lib/storage';
 
+// Opened in a popup from account.orbiwallet.xyz to clear the wallet session
+// on this origin (cross-origin storage means account. can't do it directly),
+// then reports back and closes — see lib/walletSignOut.ts.
 export default function SignOutPage() {
   useEffect(() => {
-    // Clear wallet on this domain (keys.orbiwallet.xyz)
     clearWallet();
-
-    // Redirect back to wherever we came from (account.orbiwallet.xyz)
-    const params = new URLSearchParams(window.location.search);
-    const redirect = params.get('redirect') ?? 'https://account.orbiwallet.xyz';
-    window.location.replace(redirect);
+    try { window.opener?.postMessage({ type: 'orbi_signed_out' }, '*'); } catch { /* COOP */ }
+    window.close();
   }, []);
 
   return null;

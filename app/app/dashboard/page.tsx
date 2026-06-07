@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getConnections, type StoredConnection } from '../../lib/storage';
+import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { Networks, Asset, TransactionBuilder, Operation, Account, BASE_FEE } from '@stellar/stellar-sdk';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, TOKEN_PRICE_IDS } from '../../lib/tokens';
@@ -209,7 +210,8 @@ export default function DashboardPage() {
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   }
 
-  function disconnect() {
+  async function disconnect() {
+    await fullWalletSignOut();
     orbi.disconnect();
     router.replace('/');
   }
