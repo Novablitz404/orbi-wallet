@@ -384,7 +384,7 @@ export default function DashboardPage() {
   if (!walletAddress) return null;
 
   return (
-    <div className="flex h-[100dvh] md:h-auto md:min-h-screen bg-[#020817] relative overflow-hidden md:overflow-visible">
+    <div className="flex h-[100dvh] md:h-auto md:min-h-screen bg-[#020817] relative overflow-hidden md:overflow-visible font-display">
 
       {/* ── Sidebar ── */}
       <aside className="hidden md:flex flex-col w-56 border-r border-slate-800 px-4 py-6 shrink-0">
@@ -427,7 +427,7 @@ export default function DashboardPage() {
             {dropdownOpen && (
               <div className="absolute right-0 top-full mt-2 w-72 bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden z-50">
                 <div className="px-5 pt-5 pb-3">
-                  <p className="text-white font-display font-semibold text-base mb-4">Your Account</p>
+                  <p className="text-white font-semibold text-base mb-4">Your Account</p>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <img src={dicebearUrl(walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
@@ -468,7 +468,7 @@ export default function DashboardPage() {
             {dropdownOpen && (
               <div className="absolute right-0 top-full mt-2 w-72 bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden z-50">
                 <div className="px-5 pt-5 pb-3">
-                  <p className="text-white font-display font-semibold text-base mb-4">Your Account</p>
+                  <p className="text-white font-semibold text-base mb-4">Your Account</p>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <img src={dicebearUrl(walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
@@ -500,7 +500,7 @@ export default function DashboardPage() {
         <div className="px-6 md:px-10 py-6 pb-4 flex-1 overflow-y-auto md:overflow-visible min-h-0">
           <div className="mb-4 text-left">
             <p className="text-slate-400 text-base mb-1">Your balance:</p>
-            <p className="text-5xl md:text-6xl font-display font-bold text-white">
+            <p className="text-5xl md:text-6xl font-bold text-white">
               {usdValue === null ? <span className="animate-pulse text-slate-600">$···</span> : `$${usdValue.toFixed(2)}`}
             </p>
           </div>
@@ -513,7 +513,7 @@ export default function DashboardPage() {
           {activeNav === 'assets' && (
             <>
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-white font-display font-medium">Tokens</h2>
+                <h2 className="text-white font-medium">Tokens</h2>
                 <span className="text-xs text-slate-500 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/50">Stellar Testnet</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 px-4 pb-2 border-b border-slate-800 text-slate-500 text-xs font-medium">
@@ -574,7 +574,7 @@ export default function DashboardPage() {
             <SkeletonTheme baseColor="#1e293b" highlightColor="#334155">
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-white font-display font-medium">Activity</h2>
+                  <h2 className="text-white font-medium">Activity</h2>
                   <button
                     onClick={() => walletAddress && fetchHistory(walletAddress)}
                     disabled={txLoading}
@@ -722,7 +722,7 @@ export default function DashboardPage() {
                   value={sendAmount}
                   onChange={e => setSendAmount(e.target.value)}
                   placeholder="0"
-                  className="flex-1 bg-transparent text-5xl font-display font-bold text-white outline-none placeholder-slate-700 w-0"
+                  className="flex-1 bg-transparent text-5xl font-bold text-white outline-none placeholder-slate-700 w-0"
                 />
                 <div className="flex items-center gap-2">
                   <span className="text-slate-400 text-2xl font-light">{selectedToken.code}</span>
@@ -810,7 +810,7 @@ export default function DashboardPage() {
               <button onClick={() => setPanelStep('send-form')} className="text-slate-400 hover:text-white transition-colors">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
               </button>
-              <h2 className="text-white font-display font-semibold">Send</h2>
+              <h2 className="text-white font-semibold">Send</h2>
             </div>
 
             <div className="flex-1 p-5 flex flex-col gap-5">
@@ -959,7 +959,7 @@ export default function DashboardPage() {
                 <button onClick={() => setTxDetail(null)} className="text-slate-400 hover:text-white transition-colors">
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
-                <h2 className="text-white font-display font-semibold">Transaction details</h2>
+                <h2 className="text-white font-semibold">Transaction details</h2>
               </div>
 
               <div className="flex-1 p-5 flex flex-col gap-5 overflow-y-auto">
