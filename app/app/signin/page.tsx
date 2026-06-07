@@ -2,12 +2,10 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { authenticatePasskey, derivePasskeyId } from '../../lib/passkey';
 import BackButton from '../../components/BackButton';
 import { saveWallet, loadWallet } from '../../lib/storage';
 import { signInWithPRF } from '../../lib/prf-wallet';
 
-const RELAY_URL = process.env.NEXT_PUBLIC_RELAY_URL;
 const HORIZON_URL = process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet'
   ? 'https://horizon.stellar.org'
   : 'https://horizon-testnet.stellar.org';
@@ -22,10 +20,9 @@ export default function SignInPage() {
     setError('');
     try {
       const stored = loadWallet();
+      const { gAddress, credentialId } = await signInWithPRF(stored?.credentialId);
 
-      // G wallet sign-in: PRF derives the G address directly — no relay lookup needed.
-      if (stored?.walletType === 'prf-g') {
-        const { gAddress, credentialId } = await signInWithPRF(stored.credentialId);
+      if (stored) {
         if (gAddress !== stored.walletAddress) {
           throw new Error('Passkey does not match your wallet address');
         }
@@ -34,39 +31,10 @@ export default function SignInPage() {
         return;
       }
 
-      // New device: no stored wallet — try PRF first, fall through to smart wallet lookup.
-      if (!stored) {
-        try {
-          const { gAddress, credentialId } = await signInWithPRF();
-          // Check if this G address exists on Stellar
-          const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
-          if (res.ok) {
-            saveWallet({ walletAddress: gAddress, credentialId, passkeyId: '', email: '', walletType: 'prf-g' });
-            router.replace('/dashboard');
-            return;
-          }
-        } catch {
-          // PRF not available or account not found — fall through to smart wallet lookup
-        }
-      }
-
-      // Smart wallet sign-in: passkey → passkeyId → relay lookup.
-      const credentialId = await authenticatePasskey(stored?.credentialId);
-      const passkeyId = await derivePasskeyId(credentialId);
-
-      const res = await fetch(`${RELAY_URL}/v1/wallet/lookup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passkeyId }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(body.error ?? 'Wallet not found');
-      }
-
-      const { walletAddress, email } = await res.json() as { walletAddress: string; email: string };
-      saveWallet({ walletAddress, credentialId, passkeyId, email, walletType: 'smart' });
+      // New device — verify this G address is activated on Stellar before adopting it.
+      const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
+      if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
+      saveWallet({ walletAddress: gAddress, credentialId, passkeyId: '', email: '', walletType: 'prf-g' });
       router.replace('/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign in failed');
@@ -110,13 +78,6 @@ export default function SignInPage() {
         {status === 'error' && (
           <p className="text-red-400 text-sm text-center">{error}</p>
         )}
-
-        <p className="text-slate-600 text-xs text-center">
-          Lost access?{' '}
-          <a href="/recover" className="bg-gradient-to-r from-blue-400 to-violet-500 bg-clip-text text-transparent hover:opacity-80 transition-opacity">
-            Recover with email
-          </a>
-        </p>
       </div>
     </main>
   );

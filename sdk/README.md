@@ -1,8 +1,8 @@
 # @orbi-wallet/sdk
 
-The official SDK for integrating [Orbi Smart Wallet](https://orbiwallet.xyz) into any Stellar dApp.
+The official SDK for connecting your Stellar dApp to [Orbi Smart Wallet](https://orbiwallet.xyz).
 
-Orbi is a passkey-based smart wallet on Stellar. Users sign transactions with Face ID or Touch ID — no seed phrase, no browser extension.
+Orbi is a passkey-secured **classic Stellar (G) account** wallet. Users sign in and approve transactions with Face ID / Touch ID — no seed phrase, no browser extension.
 
 ---
 
@@ -14,224 +14,90 @@ npm install @orbi-wallet/sdk
 
 ---
 
-## Quick Start
+## Quick start
 
 ```ts
 import { OrbiClient } from '@orbi-wallet/sdk';
 
-const orbi = new OrbiClient({
-  apiUrl: 'https://api.orbiwallet.xyz',
-});
+const orbi = new OrbiClient({ network: 'testnet' });
+
+// 1. Connect — opens a popup, resolves once the user approves
+const { walletAddress } = await orbi.connect();
+
+// 2. Build a transaction with @stellar/stellar-sdk and get its XDR
+const xdr = transaction.toXDR();
+
+// 3. Ask the user to review and sign — opens a popup, resolves with the signed XDR
+const { signedXdr } = await orbi.signTransaction({ xdr });
+
+// 4. Submit signedXdr to Horizon yourself (e.g. server.submitTransaction)
 ```
 
 ---
 
-## How It Works
+## How it works
 
-Orbi uses a **redirect flow** — no popups, no browser extensions. Works on all devices including mobile.
+Orbi uses a **popup + postMessage** handshake — the same integration pattern Coinbase Smart Wallet and most modern wallet SDKs use:
 
-```
-1. orbi.connect()          → redirect user to Orbi to connect wallet
-2. orbi.handleCallback()   → on return, get wallet address + passkey ID
-3. orbi.sign()             → redirect user to approve transaction with passkey
-4. orbi.handleSignCallback() + orbi.bundle()  → submit signed tx to relay
-5. orbi.waitForConfirmation(opId)             → wait for on-chain confirmation (~5s)
-```
+1. `orbi.connect()` / `orbi.signTransaction()` opens `keys.orbiwallet.xyz` in a popup
+2. The user approves with their passkey (signs in, or creates a wallet first if new)
+3. The popup posts the result back to your page and closes itself
+4. The returned promise resolves with the result
 
----
-
-## Full Example
-
-### Step 1 — Connect wallet
-
-On your "Connect" button:
-
-```ts
-orbi.connect({
-  redirectUrl: 'https://yourapp.com/callback',
-});
-// navigates to keys.orbiwallet.xyz, then back to redirectUrl?token=...
-```
-
-On your `/callback` page:
-
-```ts
-const wallet = await orbi.handleCallback();
-if (wallet) {
-  // { walletAddress, passkeyId, email }
-  localStorage.setItem('walletAddress', wallet.walletAddress);
-}
-```
-
-### Step 2 — Sign and submit a transaction
-
-```ts
-// Redirect user to approve
-orbi.sign({
-  walletAddress: localStorage.getItem('walletAddress')!,
-  contractId: 'YOUR_CONTRACT_ID',
-  functionName: 'transfer',
-  argsXdr: ['...', '...'],           // XDR-encoded args
-  redirectUrl: 'https://yourapp.com/sign-callback',
-});
-```
-
-On your `/sign-callback` page:
-
-```ts
-const result = orbi.handleSignCallback();
-if (!result) return; // user cancelled or came directly to this page
-
-const { opId } = await orbi.bundle({
-  walletAddress: result.walletAddress,
-  quoteId: result.quoteId,
-  signedAuthEntryXdr: result.signedAuthEntryXdr,
-  contractId: 'YOUR_CONTRACT_ID',
-  functionName: 'transfer',
-  argsXdr: result.argsXdr,
-});
-
-// Wait for on-chain confirmation via SSE
-const status = await orbi.waitForConfirmation(opId);
-if (status.status === 'confirmed') {
-  console.log('tx hash:', status.txHash);
-}
-```
+The connected wallet is cached in `localStorage`, so later `connect()` calls resolve instantly without reopening the popup. Call `disconnect()` to clear it.
 
 ---
 
-## API Reference
+## API
 
-### `new OrbiClient(config)`
+### `new OrbiClient(config?)`
 
-| Parameter | Type | Required | Description |
+| Option | Type | Default | Description |
 |---|---|---|---|
-| `apiUrl` | `string` | Yes | Orbi relay URL — use `https://api.orbiwallet.xyz` |
+| `network` | `'testnet' \| 'mainnet'` | `'testnet'` | Stellar network — passed through so Orbi shows the right network badge and validates the transaction against the matching ledger |
 
----
+### `connect(): Promise<ConnectedWallet>`
 
-### Wallet Connection
-
-#### `connect(params)`
-
-Redirects the user to Orbi to connect their wallet.
+Connects the user's wallet. Returns a cached session instantly if one exists; otherwise opens the connect popup and resolves once the user approves.
 
 ```ts
-orbi.connect({ redirectUrl: 'https://yourapp.com/callback' });
+const { walletAddress, credentialId, passkeyId, email } = await orbi.connect();
 ```
 
-#### `handleCallback()`
+### `signTransaction({ xdr, walletAddress? }): Promise<SignResult>`
 
-Call on your callback page after `connect()` redirects back. Returns wallet data or `null` if no token in URL.
+Opens the sign popup so the user can review and approve a transaction with their passkey.
+
+- `xdr` — base64-encoded `TransactionEnvelope` XDR for a classic G account (build it with `@stellar/stellar-sdk`)
+- `walletAddress` — optional; defaults to the currently connected address
 
 ```ts
-const wallet = await orbi.handleCallback();
-// { walletAddress: string, passkeyId: string, email: string } | null
+const { signedXdr, walletAddress } = await orbi.signTransaction({ xdr });
 ```
 
----
+Orbi only signs — it does not submit. Submit `signedXdr` to Horizon yourself.
 
-### Transaction Signing
+### `getAddress(): string | null`
 
-#### `sign(params)`
+Returns the cached wallet address from a previous `connect()`, or `null` if not connected.
 
-Redirects the user to Orbi to approve a transaction with their passkey.
+### `disconnect(): void`
 
-```ts
-orbi.sign({
-  walletAddress: string,
-  contractId: string,
-  functionName: string,
-  argsXdr: string[],       // XDR-encoded Soroban args
-  redirectUrl: string,
-});
-```
-
-#### `handleSignCallback()`
-
-Call on your sign-callback page. Returns the signed data needed to call `bundle()`, or `null` if nothing to process.
-
-```ts
-const result = orbi.handleSignCallback();
-// { signedAuthEntryXdr, quoteId, argsXdr, nativeSacId, walletAddress } | null
-```
-
----
-
-### Relay
-
-#### `bundle(params)`
-
-Submit a signed operation to the Orbi relay for on-chain execution.
-
-```ts
-const { opId } = await orbi.bundle({
-  walletAddress: string,
-  quoteId: string,
-  signedAuthEntryXdr: string,
-  contractId: string,
-  functionName: string,
-  argsXdr: string[],
-});
-```
-
-#### `waitForConfirmation(opId)`
-
-Wait for the operation to be confirmed or fail. Uses SSE — resolves in ~5s on Stellar.
-
-```ts
-const status = await orbi.waitForConfirmation(opId);
-// { opId, status: 'confirmed' | 'failed', txHash: string | null, error: string | null }
-```
-
-#### `getStatus(opId)`
-
-One-shot status check (non-blocking alternative to `waitForConfirmation`).
-
-```ts
-const status = await orbi.getStatus(opId);
-```
-
----
-
-### Token Management
-
-#### `watchAsset(params)`
-
-Redirect the user to add a Soroban token to their Orbi wallet.
-
-```ts
-orbi.watchAsset({
-  contractId: 'TOKEN_CONTRACT_ID',
-  redirectUrl: 'https://yourapp.com/callback',
-});
-```
-
-#### `handleWatchAssetCallback()`
-
-Call on your callback page after `watchAsset()` redirects back.
-
-```ts
-const result = orbi.handleWatchAssetCallback();
-// { contractId: string, added: boolean } | null
-```
+Clears the cached session on your side. Doesn't revoke anything on Orbi — the user can reconnect any time with their passkey.
 
 ---
 
 ## Notes
 
-- Works on all browsers and mobile — redirect flow, no popups or extensions
-- Only works with Orbi smart wallets — other Stellar wallets (Freighter, Lobstr) are unaffected
-- Stellar ledger closes every ~5s, so `waitForConfirmation` typically resolves in under 10s
-- XDR arg encoding: use `@stellar/stellar-sdk` to build and encode Soroban contract args
+- Requires popups to be allowed for your site — `connect()`/`signTransaction()` reject with a clear error if the popup is blocked or the user closes it
+- Works with Orbi G-wallets only (classic Stellar accounts)
+- Results are only ever accepted from `https://keys.orbiwallet.xyz`, verified by both message origin and source window — never trust `postMessage` from elsewhere
 
 ---
 
 ## Links
 
 - [Orbi Wallet](https://orbiwallet.xyz)
-- [Developer Docs](https://docs.orbiwallet.xyz)
-- [npm](https://npmjs.com/package/@orbi-wallet/sdk)
 - [GitHub](https://github.com/Novablitz404/orbi-smart-wallet)
 
 ---

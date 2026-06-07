@@ -19,15 +19,6 @@ export interface StellarToken {
   decimals: number;
 }
 
-/** A token the user (or a dApp) added manually, stored in the relay DB. */
-export interface WatchedToken {
-  contractId: string;
-  code: string;
-  name: string;
-  decimals: number;
-  addedVia: 'manual' | 'dapp';
-}
-
 const NETWORK: 'mainnet' | 'testnet' =
   process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
 const PASSPHRASE = NETWORK === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
@@ -77,11 +68,6 @@ export const STELLAR_TOKENS: StellarToken[] = DEFAULTS[NETWORK].map(t => ({
   decimals: t.decimals,
   sacId: deriveSac(t.code, t.issuer),
 }));
-
-/** A Stellar contract address: starts with C, 56 chars of base32. */
-export function isValidContractId(id: string): boolean {
-  return /^C[A-Z2-7]{55}$/.test(id.trim());
-}
 
 /** Generate a colored first-letter SVG avatar for tokens not indexed by Stellar Expert. */
 export function tokenLetterAvatar(code: string): string {

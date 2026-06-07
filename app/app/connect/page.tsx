@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { authenticatePasskey, derivePasskeyId } from '../../lib/passkey';
-import { loadWallet, saveWallet } from '../../lib/storage';
+import { signInWithPRF } from '../../lib/prf-wallet';
+import { loadWallet, saveWallet, addConnection, type StoredWallet } from '../../lib/storage';
 
-const RELAY_URL = process.env.NEXT_PUBLIC_RELAY_URL;
+const HORIZON_URL = process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet'
+  ? 'https://horizon.stellar.org'
+  : 'https://horizon-testnet.stellar.org';
 
 type Step = 'loading' | 'connect' | 'connecting' | 'done' | 'error';
 
@@ -18,12 +20,10 @@ export default function ConnectPage() {
   const [redirectUrl, setRedirectUrl] = useState('');
 
   function handleCreateWallet() {
-    const params = new URLSearchParams(window.location.search);
-    const redirect = params.get('redirect') ?? '';
     const url = new URL(window.location.href);
     url.pathname = '/create';
-    url.searchParams.delete('channelId');
-    // Keep redirect + origin so after creation user goes back to dApp
+    // Keep origin + channelId (and redirect, if present) — create loops back
+    // here once the wallet is ready so the connect handshake can complete.
     window.location.href = url.toString();
   }
 
@@ -45,47 +45,30 @@ export default function ConnectPage() {
     setChannelId(c);
     setRedirectUrl(r);
 
-    try {
-      const hostname = new URL(o).hostname;
-      setAppName(hostname);
-    } catch {
-      setAppName(o);
-    }
+    let name = o;
+    try { name = new URL(o).hostname; } catch { /* keep raw origin */ }
+    setAppName(name);
 
-    // Already signed in — auto-connect
+    // Already signed in on this device — auto-connect
     const existing = loadWallet();
     if (existing) {
-      grantAndSend(existing, o, c);
+      grantAndSend(existing, o, c, name);
       return;
     }
 
     setStep('connect');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function grantAndSend(w: { walletAddress: string; credentialId: string; passkeyId: string; email: string }, o: string, c: string) {
+  function grantAndSend(w: StoredWallet, o: string, c: string, name: string) {
     setWalletAddress(w.walletAddress);
 
-    // Save the dApp permission
-    if (o) {
-      await fetch(`${RELAY_URL}/v1/connections`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ walletAddress: w.walletAddress, origin: o, appName }),
-      }).catch(() => {/* non-fatal */});
-    }
-
-    const redirectUrl = new URLSearchParams(window.location.search).get('redirect');
+    if (o) addConnection(w.walletAddress, o, name);
 
     if (redirectUrl) {
-      // Redirect flow (no popup) — issue a relay token and redirect back
-      const res = await fetch(`${RELAY_URL}/v1/auth/tokens`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(w),
-      });
-      const { token } = await res.json() as { token: string };
+      // Redirect flow (no popup) — wallet address is public, send it straight back
       const url = new URL(redirectUrl);
-      url.searchParams.set('token', token);
+      url.searchParams.set('walletAddress', w.walletAddress);
       window.location.href = url.toString();
       return;
     }
@@ -107,20 +90,21 @@ export default function ConnectPage() {
     setStep('connecting');
     setError('');
     try {
-      const credentialId = await authenticatePasskey();
-      const passkeyId = await derivePasskeyId(credentialId);
+      const stored = loadWallet();
+      const { gAddress, credentialId } = await signInWithPRF(stored?.credentialId);
 
-      const res = await fetch(`${RELAY_URL}/v1/wallet/lookup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passkeyId }),
-      });
+      let w: StoredWallet;
+      if (stored) {
+        if (gAddress !== stored.walletAddress) throw new Error('Passkey does not match your wallet address');
+        w = { ...stored, credentialId };
+      } else {
+        const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
+        if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
+        w = { walletAddress: gAddress, credentialId, passkeyId: '', email: '', walletType: 'prf-g' };
+      }
+      saveWallet(w);
 
-      if (!res.ok) throw new Error('Wallet not found — create one at account.orbiwallet.xyz');
-      const { walletAddress: addr, email } = await res.json() as { walletAddress: string; email: string };
-      saveWallet({ walletAddress: addr, credentialId, passkeyId, email });
-
-      await grantAndSend({ walletAddress: addr, credentialId, passkeyId, email }, origin, channelId);
+      grantAndSend(w, origin, channelId, appName);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Connection failed');
       setStep('error');

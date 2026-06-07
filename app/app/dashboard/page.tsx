@@ -2,16 +2,15 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { loadWallet, clearWallet } from '../../lib/storage';
-import { Address, Networks, Asset, nativeToScVal, TransactionBuilder, Operation, Account, BASE_FEE } from '@stellar/stellar-sdk';
-import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, isValidContractId, TOKEN_PRICE_IDS, type WatchedToken } from '../../lib/tokens';
+import { loadWallet, clearWallet, getConnections, type StoredConnection } from '../../lib/storage';
+import { Networks, Asset, TransactionBuilder, Operation, Account, BASE_FEE } from '@stellar/stellar-sdk';
+import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, TOKEN_PRICE_IDS } from '../../lib/tokens';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
 const dicebearUrl = (seed: string, size: number) =>
   `https://api.dicebear.com/9.x/rings/svg?seed=${encodeURIComponent(seed)}&size=${size}`;
 
-const RELAY_URL = process.env.NEXT_PUBLIC_RELAY_URL;
 const KEYS_URL = 'https://keys.orbiwallet.xyz';
 const ACCOUNT_URL = 'https://account.orbiwallet.xyz';
 const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? 'testnet') as 'testnet' | 'mainnet';
@@ -46,6 +45,7 @@ interface SendToken {
   sacId: string;
   decimals: number;
   iconSrc: string;
+  issuer?: string;
 }
 
 interface DisplayToken {
@@ -55,7 +55,6 @@ interface DisplayToken {
   decimals: number;
   iconSrc: string;
   issuer?: string;
-  addedVia?: 'manual' | 'dapp';
 }
 
 const XLM_SEND_TOKEN: SendToken = {
@@ -70,6 +69,7 @@ export default function DashboardPage() {
   const [tokenPrices, setTokenPrices] = useState<Record<string, number>>({});
   const [copied, setCopied] = useState(false);
   const [activeNav, setActiveNav] = useState('assets');
+  const [connections, setConnections] = useState<StoredConnection[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const mobileDropdownRef = useRef<HTMLDivElement>(null);
@@ -81,29 +81,18 @@ export default function DashboardPage() {
   const [sendTo, setSendTo] = useState('');
   const [sendAmount, setSendAmount] = useState('');
   const [sendQuote, setSendQuote] = useState<Quote | null>(null);
-  const [sendQuoting, setSendQuoting] = useState(false);
   const [sendError, setSendError] = useState('');
   const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
   const [selectedToken, setSelectedToken] = useState<SendToken>(XLM_SEND_TOKEN);
   const [tokenSelectorOpen, setTokenSelectorOpen] = useState(false);
-  const [maxLoading, setMaxLoading] = useState(false);
 
-  // Toast notification for background tx confirmation
+  // Toast notification for tx confirmation
   type Toast = { type: 'pending' | 'success' | 'error'; message: string; txHash?: string };
   const [toast, setToast] = useState<Toast | null>(null);
   const [transactions, setTransactions] = useState<TxRecord[] | null>(null);
   const [txLoading, setTxLoading] = useState(false);
   const [txPage, setTxPage] = useState(1);
   const [txHasMore, setTxHasMore] = useState(false);
-
-  // Watched (manually/dApp-added) tokens
-  const [watchedTokens, setWatchedTokens] = useState<WatchedToken[]>([]);
-  const [addTokenOpen, setAddTokenOpen] = useState(false);
-  const [addTokenInput, setAddTokenInput] = useState('');
-  const [addTokenPreview, setAddTokenPreview] = useState<{ code: string; name: string; decimals: number } | null>(null);
-  const [addTokenLoading, setAddTokenLoading] = useState(false);
-  const [addTokenSaving, setAddTokenSaving] = useState(false);
-  const [addTokenError, setAddTokenError] = useState('');
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -118,45 +107,32 @@ export default function DashboardPage() {
   async function fetchHistory(walletAddress: string, page = 1) {
     setTxLoading(true);
     try {
-      const w = loadWallet();
-
-      if (w?.walletType === 'prf-g') {
-        // G wallet: use Horizon payments endpoint directly.
-        const cursor = page > 1 ? `&cursor=TODO` : ''; // simple pagination for now
-        const res = await fetch(
-          `${HORIZON_URL}/accounts/${walletAddress}/payments?order=desc&limit=10${cursor}`,
-        );
-        if (!res.ok) { if (page === 1) setTransactions([]); return; }
-        const data = await res.json() as {
-          _embedded: { records: Array<{
-            id: string; type: string; created_at: string;
-            from?: string; to?: string; amount?: string; asset_type?: string;
-          }> };
-          _links: { next?: { href?: string } };
-        };
-        const records = data._embedded?.records ?? [];
-        const txs: TxRecord[] = records.map(r => ({
-          id: r.id,
-          direction: r.to === walletAddress ? 'incoming' : 'outgoing',
-          type: 'transfer',
-          status: 'confirmed',
-          assetCode: r.asset_type === 'native' ? 'XLM' : undefined,
-          amount: r.amount ? String(Math.round(parseFloat(r.amount) * 1e7)) : undefined,
-          to: r.to,
-          from: r.from,
-          createdAt: r.created_at,
-        }));
-        setTransactions(prev => page === 1 ? txs : [...(prev ?? []), ...txs]);
-        setTxHasMore(!!data._links?.next?.href);
-        setTxPage(page);
-        return;
-      }
-
-      // Smart wallet: relay history.
-      const res = await fetch(`${RELAY_URL}/v1/wallet/history/${walletAddress}?page=${page}&limit=10`);
-      const data = await res.json() as { transactions?: TxRecord[]; hasMore?: boolean };
-      setTransactions(prev => page === 1 ? (data.transactions ?? []) : [...(prev ?? []), ...(data.transactions ?? [])]);
-      setTxHasMore(data.hasMore ?? false);
+      const cursor = page > 1 ? `&cursor=TODO` : ''; // simple pagination for now
+      const res = await fetch(
+        `${HORIZON_URL}/accounts/${walletAddress}/payments?order=desc&limit=10${cursor}`,
+      );
+      if (!res.ok) { if (page === 1) setTransactions([]); return; }
+      const data = await res.json() as {
+        _embedded: { records: Array<{
+          id: string; type: string; created_at: string;
+          from?: string; to?: string; amount?: string; asset_type?: string;
+        }> };
+        _links: { next?: { href?: string } };
+      };
+      const records = data._embedded?.records ?? [];
+      const txs: TxRecord[] = records.map(r => ({
+        id: r.id,
+        direction: r.to === walletAddress ? 'incoming' : 'outgoing',
+        type: 'transfer',
+        status: 'confirmed',
+        assetCode: r.asset_type === 'native' ? 'XLM' : undefined,
+        amount: r.amount ? String(Math.round(parseFloat(r.amount) * 1e7)) : undefined,
+        to: r.to,
+        from: r.from,
+        createdAt: r.created_at,
+      }));
+      setTransactions(prev => page === 1 ? txs : [...(prev ?? []), ...txs]);
+      setTxHasMore(!!data._links?.next?.href);
       setTxPage(page);
     } catch {
       if (page === 1) setTransactions([]);
@@ -165,52 +141,30 @@ export default function DashboardPage() {
     }
   }
 
-  // Fetch balances for a list of SAC/contract IDs and merge into state.
-  async function loadTokenBalances(walletAddress: string, sacIds: string[]) {
-    if (sacIds.length === 0) return;
-    const results = await Promise.all(
-      sacIds.map(sacId =>
-        fetch(`${RELAY_URL}/v1/wallet/token-balance/${walletAddress}/${sacId}`)
-          .then(r => r.json())
-          .then((d: { balance?: string }) => ({ sacId, balance: d.balance ?? '0' }))
-          .catch(() => ({ sacId, balance: '0' }))
-      )
-    );
-    setTokenBalances(prev => {
-      const map = { ...prev };
-      results.forEach(({ sacId, balance }) => { map[sacId] = balance; });
-      return map;
-    });
-  }
-
-  // Load the wallet's watched tokens, then fetch their balances.
-  async function loadWatchedTokens(walletAddress: string) {
-    try {
-      const res = await fetch(`${RELAY_URL}/v1/wallet/tokens/${walletAddress}`);
-      const data = await res.json() as { tokens?: WatchedToken[] };
-      const tokens = data.tokens ?? [];
-      setWatchedTokens(tokens);
-      loadTokenBalances(walletAddress, tokens.map(t => t.contractId));
-    } catch { /* keep existing */ }
-  }
-
   useEffect(() => {
     const w = loadWallet();
     if (!w) { router.replace('/'); return; }
     setWallet(w);
-    if (w.walletType === 'prf-g') {
-      fetch(`${HORIZON_URL}/accounts/${w.walletAddress}`)
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then((d: { balances?: Array<{ asset_type: string; balance: string }> }) => {
-          const native = d.balances?.find(b => b.asset_type === 'native');
-          setXlmBalance(native?.balance ?? '0.0000000');
-        })
-        .catch(() => setXlmBalance('0.0000000'));
-    } else {
-      fetch(`${RELAY_URL}/v1/wallet/balance/${w.walletAddress}`)
-        .then(r => r.json()).then((d: { xlm?: string }) => setXlmBalance(d.xlm ?? '0.0000000'))
-        .catch(() => setXlmBalance('0.0000000'));
-    }
+    setConnections(getConnections(w.walletAddress));
+
+    // Horizon's account record carries the native balance plus every trustline
+    // balance in one call — no separate per-token lookups needed for a G wallet.
+    fetch(`${HORIZON_URL}/accounts/${w.walletAddress}`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((d: { balances?: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string; balance: string }> }) => {
+        const balances = d.balances ?? [];
+        const native = balances.find(b => b.asset_type === 'native');
+        setXlmBalance(native?.balance ?? '0.0000000');
+
+        const map: Record<string, string> = {};
+        for (const token of STELLAR_TOKENS) {
+          const trustline = balances.find(b => b.asset_code === token.code && b.asset_issuer === token.issuer);
+          if (trustline) map[token.sacId] = String(Math.round(parseFloat(trustline.balance) * 10 ** token.decimals));
+        }
+        setTokenBalances(map);
+      })
+      .catch(() => setXlmBalance('0.0000000'));
+
     const priceIds = [...new Set(Object.values(TOKEN_PRICE_IDS))].join(',');
     fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${priceIds}&vs_currencies=usd`)
       .then(r => r.json())
@@ -224,63 +178,24 @@ export default function DashboardPage() {
         if (typeof byCode.XLM === 'number') setXlmPrice(byCode.XLM);
       })
       .catch(() => { setXlmPrice(null); setTokenPrices({}); });
-
-    loadTokenBalances(w.walletAddress, STELLAR_TOKENS.map(t => t.sacId));
-    loadWatchedTokens(w.walletAddress);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  // Subscribe to SSE for a pending op from sign-callback redirect
+  // G wallet submits directly to Horizon — sign-callback redirects back with
+  // either a txHash (success) or txError (failure) immediately, no polling needed.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const opId = params.get('pendingOp');
     const txError = params.get('txError');
+    const txHash = params.get('txHash');
 
     // Clean URL immediately
     window.history.replaceState({}, '', '/dashboard');
 
     if (txError) {
       setToast({ type: 'error', message: decodeURIComponent(txError) });
-      return;
-    }
-
-    // G wallet: direct Horizon submission — txHash available immediately.
-    const txHash = params.get('txHash');
-    if (txHash) {
+    } else if (txHash) {
       setToast({ type: 'success', message: 'Sent!', txHash });
-      return;
     }
-
-    if (!opId) return;
-
-    setToast({ type: 'pending', message: 'Sending…' });
-
-    const es = new EventSource(`${RELAY_URL}/v1/wallet/events/${opId}`);
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data) as { status: string; txHash?: string; error?: string };
-        if (data.status === 'confirmed') {
-          setToast({ type: 'success', message: 'Sent!', txHash: data.txHash ?? undefined });
-          // Refresh balances after confirmation
-          if (wallet) {
-            fetch(`${RELAY_URL}/v1/wallet/balance/${wallet.walletAddress}`)
-              .then(r => r.json()).then((d: { xlm?: string }) => setXlmBalance(d.xlm ?? '0.0000000'))
-              .catch(() => {});
-            fetchHistory(wallet.walletAddress);
-          }
-        } else if (data.status === 'failed') {
-          setToast({ type: 'error', message: data.error ?? 'Transaction failed' });
-        } else if (data.status === 'timeout') {
-          setToast({ type: 'error', message: 'Timed out — check activity tab' });
-        }
-      } catch { /* ignore */ }
-      es.close();
-    };
-    es.onerror = () => {
-      setToast({ type: 'error', message: 'Lost connection — check activity tab' });
-      es.close();
-    };
-    return () => es.close();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -327,75 +242,24 @@ export default function DashboardPage() {
     return fmt(Number(BigInt(raw)) / 10 ** selectedToken.decimals);
   }
 
-  async function setMax() {
-    if (selectedToken.code !== 'XLM' || !xlmBalance || !wallet) {
+  function setMax() {
+    if (selectedToken.code !== 'XLM' || !xlmBalance) {
       setSendAmount(getSelectedBalance());
       return;
     }
 
-    // G wallet: fee is always BASE_FEE + 1 XLM base reserve must remain.
-    if (wallet.walletType === 'prf-g') {
-      const balanceStroops = Math.floor(parseFloat(xlmBalance) * 1e7);
-      const maxStroops = Math.max(0, balanceStroops - 100 - 10_000_000); // BASE_FEE + 1 XLM reserve
-      setSendAmount((maxStroops / 1e7).toFixed(7).replace(/0+$/, '').replace(/\.$/, ''));
-      return;
-    }
-
-    // If we already have a quote for this session, reuse its fee
-    if (sendQuote) {
-      const maxSendable = Math.max(0, parseFloat(xlmBalance) - parseFloat(sendQuote.feeXlm));
-      setSendAmount(fmt(maxSendable));
-      return;
-    }
-
-    // Fetch the exact fee with a dummy quote (pricer ignores args for transfer)
-    setMaxLoading(true);
-    try {
-      const dummyAddr = new Address(wallet.walletAddress).toScVal().toXDR('base64');
-      const dummyAmt = nativeToScVal(1n, { type: 'i128' }).toXDR('base64');
-      const res = await fetch(`${RELAY_URL}/v1/quote`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          walletAddress: wallet.walletAddress,
-          contractId: NATIVE_SAC_ID,
-          functionName: 'transfer',
-          argsXdr: [dummyAddr, dummyAddr, dummyAmt],
-        }),
-      });
-      if (res.ok) {
-        const q = await res.json() as { feeStroops: number };
-        const balanceStroops = Math.floor(parseFloat(xlmBalance) * 1e7);
-        const maxStroops = Math.max(0, balanceStroops - q.feeStroops);
-        setSendAmount((maxStroops / 1e7).toFixed(7).replace(/0+$/, '').replace(/\.$/, ''));
-      } else {
-        setSendAmount(fmt(Math.max(0, parseFloat(xlmBalance) - 0.01)));
-      }
-    } catch {
-      setSendAmount(fmt(Math.max(0, parseFloat(xlmBalance) - 0.01)));
-    } finally {
-      setMaxLoading(false);
-    }
+    // Fee is always BASE_FEE, and the 1 XLM base reserve must remain.
+    const balanceStroops = Math.floor(parseFloat(xlmBalance) * 1e7);
+    const maxStroops = Math.max(0, balanceStroops - 100 - 10_000_000); // BASE_FEE + 1 XLM reserve
+    setSendAmount((maxStroops / 1e7).toFixed(7).replace(/0+$/, '').replace(/\.$/, ''));
   }
 
-  // Curated defaults + watched tokens, deduped by contract ID.
+  // Curated default tokens, with whatever balance the account's trustlines show.
   function getDisplayTokens(): DisplayToken[] {
-    const map = new Map<string, DisplayToken>();
-    for (const t of STELLAR_TOKENS) {
-      map.set(t.sacId, {
-        code: t.code, name: t.name, sacId: t.sacId, decimals: t.decimals,
-        iconSrc: stellarExpertIcon(t.code, t.issuer), issuer: t.issuer,
-      });
-    }
-    for (const w of watchedTokens) {
-      if (!map.has(w.contractId)) {
-        map.set(w.contractId, {
-          code: w.code, name: w.name, sacId: w.contractId, decimals: w.decimals,
-          iconSrc: tokenLetterAvatar(w.code), addedVia: w.addedVia,
-        });
-      }
-    }
-    return [...map.values()];
+    return STELLAR_TOKENS.map(t => ({
+      code: t.code, name: t.name, sacId: t.sacId, decimals: t.decimals,
+      iconSrc: stellarExpertIcon(t.code, t.issuer), issuer: t.issuer,
+    }));
   }
 
   // All tokens with a non-zero balance, for the send selector
@@ -404,158 +268,55 @@ export default function DashboardPage() {
     for (const t of getDisplayTokens()) {
       const raw = tokenBalances[t.sacId] ?? '0';
       if (BigInt(raw) > 0n) {
-        tokens.push({ code: t.code, name: t.name, sacId: t.sacId, decimals: t.decimals, iconSrc: t.iconSrc });
+        tokens.push({ code: t.code, name: t.name, sacId: t.sacId, decimals: t.decimals, iconSrc: t.iconSrc, issuer: t.issuer });
       }
     }
     return tokens;
   }
 
-  // ── Add / remove watched tokens ──
-  function openAddToken() {
-    setAddTokenInput(''); setAddTokenPreview(null); setAddTokenError(''); setAddTokenOpen(true);
-  }
-
-  async function previewToken(contractId: string) {
-    setAddTokenPreview(null); setAddTokenError(''); setAddTokenLoading(true);
-    try {
-      const res = await fetch(`${RELAY_URL}/v1/wallet/token-metadata/${contractId}`);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({})) as { error?: string }).error ?? 'Not a token contract');
-      setAddTokenPreview(await res.json() as { code: string; name: string; decimals: number });
-    } catch (e: unknown) {
-      setAddTokenError(e instanceof Error ? e.message : 'Could not read token');
-    } finally {
-      setAddTokenLoading(false);
-    }
-  }
-
-  async function confirmAddToken() {
-    if (!wallet || !addTokenPreview) return;
-    setAddTokenSaving(true); setAddTokenError('');
-    try {
-      const res = await fetch(`${RELAY_URL}/v1/wallet/tokens`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ walletAddress: wallet.walletAddress, contractId: addTokenInput.trim() }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({})) as { error?: string }).error ?? 'Failed to add token');
-      setAddTokenOpen(false);
-      await loadWatchedTokens(wallet.walletAddress);
-    } catch (e: unknown) {
-      setAddTokenError(e instanceof Error ? e.message : 'Failed to add token');
-    } finally {
-      setAddTokenSaving(false);
-    }
-  }
-
-  async function removeToken(contractId: string) {
-    if (!wallet) return;
-    setWatchedTokens(prev => prev.filter(t => t.contractId !== contractId));
-    try {
-      await fetch(`${RELAY_URL}/v1/wallet/tokens/${wallet.walletAddress}/${contractId}`, { method: 'DELETE' });
-    } catch { /* optimistic; will re-sync on reload */ }
-  }
-
-  // Auto-preview once the input is a valid contract address
-  useEffect(() => {
-    if (!addTokenOpen) return;
-    const id = addTokenInput.trim();
-    if (!isValidContractId(id)) { setAddTokenPreview(null); setAddTokenError(''); return; }
-    const timer = setTimeout(() => previewToken(id), 400);
-    return () => clearTimeout(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addTokenInput, addTokenOpen]);
-
-  async function handlePreview() {
+  function handlePreview() {
     if (!wallet || !sendTo.trim() || !sendAmount) return;
-    setSendQuoting(true); setSendError('');
-    try {
-      // G wallet: no relay quote needed — fee is always BASE_FEE (0.00001 XLM).
-      if (wallet.walletType === 'prf-g') {
-        setSendQuote({ quoteId: '', feeXlm: '0.00001', nativeSacId: '' });
-        setPanelStep('send-preview');
-        return;
-      }
-
-      // Smart wallet: relay quote.
-      const amountUnits = Math.round(parseFloat(sendAmount) * 10 ** selectedToken.decimals);
-      const argsXdr = [
-        new Address(wallet.walletAddress).toScVal(),
-        new Address(sendTo.trim()).toScVal(),
-        nativeToScVal(BigInt(amountUnits), { type: 'i128' }),
-      ].map(a => Buffer.from(a.toXDR()).toString('base64'));
-      const res = await fetch(`${RELAY_URL}/v1/quote`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          walletAddress: wallet.walletAddress,
-          contractId: selectedToken.sacId,
-          functionName: 'transfer',
-          argsXdr,
-        }),
-      });
-      if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error ?? 'Quote failed');
-      const q = await res.json() as Quote;
-      setSendQuote(q);
-      setPanelStep('send-preview');
-    } catch (e: unknown) {
-      setSendError(e instanceof Error ? e.message : 'Quote failed');
-    } finally { setSendQuoting(false); }
+    setSendError('');
+    // Fee is always BASE_FEE (0.00001 XLM) for a classic Stellar payment.
+    setSendQuote({ quoteId: '', feeXlm: '0.00001', nativeSacId: '' });
+    setPanelStep('send-preview');
   }
 
   async function handleConfirm() {
     if (!wallet || !sendQuote) return;
 
-    // G wallet: build Payment transaction XDR → redirect to sign page.
-    if (wallet.walletType === 'prf-g') {
-      setSendError('');
-      try {
-        const accountRes = await fetch(`${HORIZON_URL}/accounts/${wallet.walletAddress}`);
-        if (!accountRes.ok) throw new Error('Account not found on Stellar — deposit 1 XLM first');
-        const accountData = await accountRes.json() as { sequence: string };
-        const account = new Account(wallet.walletAddress, accountData.sequence);
-        const tx = new TransactionBuilder(account, {
-          fee: BASE_FEE,
-          networkPassphrase: NETWORK_PASSPHRASE,
-        })
-          .addOperation(Operation.payment({
-            destination: sendTo.trim(),
-            asset: selectedToken.code === 'XLM' ? Asset.native() : new Asset(selectedToken.code, selectedToken.sacId),
-            amount: sendAmount,
-          }))
-          .setTimeout(30)
-          .build();
+    setSendError('');
+    try {
+      const accountRes = await fetch(`${HORIZON_URL}/accounts/${wallet.walletAddress}`);
+      if (!accountRes.ok) throw new Error('Account not found on Stellar — deposit 1 XLM first');
+      const accountData = await accountRes.json() as { sequence: string };
+      const account = new Account(wallet.walletAddress, accountData.sequence);
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(Operation.payment({
+          destination: sendTo.trim(),
+          asset: selectedToken.code === 'XLM' || !selectedToken.issuer
+            ? Asset.native()
+            : new Asset(selectedToken.code, selectedToken.issuer),
+          amount: sendAmount,
+        }))
+        .setTimeout(30)
+        .build();
 
-        const txXdr = tx.toXDR();
-        const params = new URLSearchParams({
-          xdr: txXdr,
-          network: NETWORK,
-          redirect: `${ACCOUNT_URL}/sign-callback`,
-          origin: window.location.origin,
-          walletAddress: wallet.walletAddress,
-        });
-        window.location.href = `${KEYS_URL}/sign?${params}`;
-      } catch (e: unknown) {
-        setSendError(e instanceof Error ? e.message : 'Failed to build transaction');
-      }
-      return;
+      const txXdr = tx.toXDR();
+      const params = new URLSearchParams({
+        xdr: txXdr,
+        network: NETWORK,
+        redirect: `${ACCOUNT_URL}/sign-callback`,
+        origin: window.location.origin,
+        walletAddress: wallet.walletAddress,
+      });
+      window.location.href = `${KEYS_URL}/sign?${params}`;
+    } catch (e: unknown) {
+      setSendError(e instanceof Error ? e.message : 'Failed to build transaction');
     }
-
-    // Smart wallet: relay flow.
-    const amountUnits = Math.round(parseFloat(sendAmount) * 10 ** selectedToken.decimals);
-    const argsXdr = JSON.stringify([
-      new Address(wallet.walletAddress).toScVal(),
-      new Address(sendTo.trim()).toScVal(),
-      nativeToScVal(BigInt(amountUnits), { type: 'i128' }),
-    ].map(a => Buffer.from(a.toXDR()).toString('base64')));
-    const params = new URLSearchParams({
-      redirect: `${ACCOUNT_URL}/sign-callback`,
-      origin: window.location.origin,
-      walletAddress: wallet.walletAddress,
-      contractId: selectedToken.sacId,
-      functionName: 'transfer',
-      argsXdr,
-    });
-    window.location.href = `${KEYS_URL}/sign?${params}`;
   }
 
   const xlmFloat = xlmBalance ? parseFloat(xlmBalance) : 0;
@@ -763,29 +524,12 @@ export default function DashboardPage() {
                         <p className="text-white text-sm font-medium">{usd !== null ? `$${usd.toFixed(2)}` : '—'}</p>
                         <p className="text-slate-500 text-xs">{fmt(bal)} {token.code}</p>
                       </div>
-                      {token.addedVia && (
-                        <button
-                          onClick={() => removeToken(token.sacId)}
-                          title="Remove token"
-                          className="text-slate-600 hover:text-red-400 transition-colors md:opacity-0 md:group-hover:opacity-100"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                        </button>
-                      )}
                     </div>
                     <div className="text-right hidden md:block"><p className="text-white text-sm">{tokenPct !== null ? `${tokenPct.toFixed(1)}%` : '—'}</p></div>
                     <div className="text-right hidden md:block"><p className="text-white text-sm">{price !== null ? `$${price.toFixed(4)}` : '—'}</p></div>
                   </div>
                 );
               })}
-
-              <button
-                onClick={openAddToken}
-                className="w-full mt-3 py-3 rounded-xl border border-dashed border-slate-700 text-slate-400 text-sm hover:border-slate-500 hover:text-slate-300 transition-colors flex items-center justify-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                Add token
-              </button>
             </>
           )}
 
@@ -891,11 +635,25 @@ export default function DashboardPage() {
           )}
 
           {activeNav === 'apps' && (
-            <div className="flex flex-col items-center justify-center py-20 gap-3">
-              <p className="text-slate-500 text-sm">No apps connected</p>
-              <p className="text-slate-600 text-xs text-center max-w-xs">Connect Orbi to Stellar dApps and they'll appear here.</p>
-              <a href="/settings" className="mt-2 text-blue-400 text-xs hover:underline">Manage connections →</a>
-            </div>
+            connections.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 gap-3">
+                <p className="text-slate-500 text-sm">No apps connected</p>
+                <p className="text-slate-600 text-xs text-center max-w-xs">Connect Orbi to Stellar dApps and they'll appear here.</p>
+              </div>
+            ) : (
+              <div className="rounded-2xl bg-slate-800/50 border border-slate-700 divide-y divide-slate-700/50">
+                {connections.map(c => (
+                  <div key={c.origin} className="flex items-center justify-between p-4">
+                    <div>
+                      <p className="text-white text-sm font-medium">{c.appName || c.origin}</p>
+                      <p className="text-slate-500 text-xs">{c.origin}</p>
+                      <p className="text-slate-600 text-xs">Connected {new Date(c.connectedAt).toLocaleDateString()}</p>
+                    </div>
+                    <a href="/settings" className="text-blue-400 text-xs hover:underline">Manage →</a>
+                  </div>
+                ))}
+              </div>
+            )
           )}
         </div>
 
@@ -940,7 +698,7 @@ export default function DashboardPage() {
                 />
                 <div className="flex items-center gap-2">
                   <span className="text-slate-400 text-2xl font-light">{selectedToken.code}</span>
-                  <button onClick={setMax} disabled={maxLoading} className="text-xs text-slate-500 border border-slate-700 px-2.5 py-1 rounded-lg hover:border-slate-500 transition-colors disabled:opacity-40">{maxLoading ? '…' : 'Max'}</button>
+                  <button onClick={setMax} className="text-xs text-slate-500 border border-slate-700 px-2.5 py-1 rounded-lg hover:border-slate-500 transition-colors">Max</button>
                 </div>
               </div>
               {sendUsd !== null && (
@@ -1008,14 +766,10 @@ export default function DashboardPage() {
             <div className="p-5 border-t border-slate-800">
               <button
                 onClick={handlePreview}
-                disabled={!sendTo.trim() || !sendAmount || sendQuoting}
+                disabled={!sendTo.trim() || !sendAmount}
                 className="w-full py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-900 font-semibold flex items-center justify-center gap-2 transition-colors"
               >
-                {sendQuoting ? (
-                  <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>Getting fee…</>
-                ) : (
-                  <>Preview send <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg></>
-                )}
+                Preview send <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg>
               </button>
             </div>
           </>
@@ -1145,61 +899,6 @@ export default function DashboardPage() {
           </>
         )}
       </div>
-
-      {/* ── Add token modal ── */}
-      {addTokenOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setAddTokenOpen(false)} />
-          <div className="relative w-full max-w-sm bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl shadow-black/50 p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white font-semibold">Add token</h3>
-              <button onClick={() => setAddTokenOpen(false)} className="text-slate-400 hover:text-white transition-colors">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
-
-            <label className="text-slate-400 text-xs mb-1.5 block">Token contract address</label>
-            <input
-              value={addTokenInput}
-              onChange={e => setAddTokenInput(e.target.value)}
-              placeholder="C..."
-              autoFocus
-              className="w-full px-3 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors font-mono text-sm"
-            />
-
-            {addTokenLoading && (
-              <div className="flex items-center gap-2 mt-3 text-slate-400 text-sm">
-                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
-                Reading token…
-              </div>
-            )}
-
-            {addTokenError && <p className="text-red-400 text-xs mt-3">{addTokenError}</p>}
-
-            {addTokenPreview && !addTokenLoading && (
-              <div className="flex items-center gap-3 mt-3 p-3 rounded-xl bg-slate-800/50 border border-slate-700/50">
-                <div className="w-9 h-9 rounded-full overflow-hidden flex-shrink-0">
-                  <img src={tokenLetterAvatar(addTokenPreview.code)} alt={addTokenPreview.code} className="w-full h-full object-cover" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-white text-sm font-medium truncate">{addTokenPreview.name}</p>
-                  <p className="text-slate-500 text-xs">{addTokenPreview.code} · {addTokenPreview.decimals} decimals</p>
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={confirmAddToken}
-              disabled={!addTokenPreview || addTokenSaving}
-              className="w-full mt-5 py-3.5 rounded-2xl bg-white hover:bg-slate-100 text-slate-900 font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {addTokenSaving
-                ? <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>Adding…</>
-                : 'Add token'}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ── Toast notification ── */}
       {toast && (

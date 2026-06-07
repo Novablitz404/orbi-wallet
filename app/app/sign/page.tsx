@@ -1,49 +1,19 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { xdr, TransactionBuilder, Networks, Operation } from '@stellar/stellar-sdk';
+import { TransactionBuilder, Networks, Operation } from '@stellar/stellar-sdk';
 import { loadWallet } from '../../lib/storage';
-import { signAuthEntryWithPasskey } from '../../lib/authEntry';
 import { signTransactionWithPRF } from '../../lib/prf-wallet';
-
-const RELAY_URL = process.env.NEXT_PUBLIC_RELAY_URL;
-const STROOPS_PER_XLM = 10_000_000;
 
 type Step = 'loading' | 'review' | 'signing' | 'done' | 'error';
 
-// ── Smart wallet (existing) types ─────────────────────────────────────────────
-interface SmartSignRequest {
-  mode: 'smart';
-  channelId: string;
-  walletAddress: string;
-  contractId: string;
-  functionName: string;
-  argsXdr: string[];
-  origin: string;
-  apiKey?: string;
-}
-
-interface QuoteResult {
-  quoteId: string;
-  authEntryXdr: string;
-  currentLedger: number;
-  nativeSacId: string;
-  feeXlm: string;
-  sponsored: boolean;
-  sponsorName: string | null;
-}
-
-// ── G wallet (new) types ──────────────────────────────────────────────────────
-interface GSignRequest {
-  mode: 'g';
+interface SignRequest {
   channelId: string;
   walletAddress: string;
   xdr: string;            // base64 TransactionEnvelope XDR
   network: 'testnet' | 'mainnet';
   origin: string;
 }
-
-type SignRequest = SmartSignRequest | GSignRequest;
 
 // Summarise what a G wallet transaction is doing (for the review UI).
 function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: string[] } {
@@ -78,115 +48,42 @@ function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: s
 /**
  * keys.orbiwallet.xyz/sign
  *
- * Supports two modes:
- *  - Smart wallet (existing): URL params include contractId/functionName/argsXdr
- *  - G wallet (new): URL params include xdr (raw transaction envelope base64)
+ * URL params: xdr (raw transaction envelope, base64), network, walletAddress, origin.
  */
 export default function SignPage() {
   const [step, setStep] = useState<Step>('loading');
   const [req, setReq] = useState<SignRequest | null>(null);
-  const [trusted, setTrusted] = useState(false);
   const [error, setError] = useState('');
-  const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [gSummary, setGSummary] = useState<string[]>([]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const txXdr = params.get('xdr');
 
-    if (txXdr) {
-      // G wallet mode
-      const network = (params.get('network') ?? 'testnet') as 'testnet' | 'mainnet';
-      const r: GSignRequest = {
-        mode: 'g',
-        channelId: params.get('channelId') ?? '',
-        walletAddress: params.get('walletAddress') ?? '',
-        xdr: txXdr,
-        network,
-        origin: params.get('origin') ?? '',
-      };
+    if (!txXdr) { setError('Missing transaction XDR'); setStep('error'); return; }
 
-      if (!r.xdr) { setError('Missing transaction XDR'); setStep('error'); return; }
-
-      // If walletAddress wasn't provided in URL, get it from storage
-      if (!r.walletAddress) {
-        const stored = loadWallet();
-        if (stored) r.walletAddress = stored.walletAddress;
-      }
-
-      setReq(r);
-      setGSummary(summariseGTx(r.xdr, r.network).lines);
-
-      if (r.walletAddress && r.origin) {
-        fetch(`${RELAY_URL}/v1/connections/check?walletAddress=${r.walletAddress}&origin=${encodeURIComponent(r.origin)}`)
-          .then(res => res.json())
-          .then((d: { connected?: boolean }) => setTrusted(d.connected ?? false))
-          .catch(() => setTrusted(false));
-      }
-
-      setStep('review');
-      return;
-    }
-
-    // Smart wallet mode (existing flow)
-    const r: SmartSignRequest = {
-      mode: 'smart',
+    const network = (params.get('network') ?? 'testnet') as 'testnet' | 'mainnet';
+    const r: SignRequest = {
       channelId: params.get('channelId') ?? '',
       walletAddress: params.get('walletAddress') ?? '',
-      contractId: params.get('contractId') ?? '',
-      functionName: params.get('functionName') ?? '',
-      argsXdr: JSON.parse(params.get('argsXdr') ?? '[]') as string[],
+      xdr: txXdr,
+      network,
       origin: params.get('origin') ?? '',
-      apiKey: params.get('apiKey') ?? undefined,
     };
 
-    if (!r.walletAddress || !r.contractId || !r.functionName) {
-      setError('Invalid sign request — missing parameters');
-      setStep('error');
-      return;
+    // If walletAddress wasn't provided in URL, get it from storage
+    if (!r.walletAddress) {
+      const stored = loadWallet();
+      if (stored) r.walletAddress = stored.walletAddress;
     }
 
     setReq(r);
-
-    if (r.walletAddress && r.origin) {
-      fetch(`${RELAY_URL}/v1/connections/check?walletAddress=${r.walletAddress}&origin=${encodeURIComponent(r.origin)}`)
-        .then(res => res.json())
-        .then((d: { connected?: boolean }) => setTrusted(d.connected ?? false))
-        .catch(() => setTrusted(false));
-    }
-
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (r.apiKey) headers['Authorization'] = `Bearer ${r.apiKey}`;
-    fetch(`${RELAY_URL}/v1/quote`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        walletAddress: r.walletAddress,
-        contractId: r.contractId,
-        functionName: r.functionName,
-        argsXdr: r.argsXdr,
-      }),
-    })
-      .then(res => { if (!res.ok) throw new Error('quote failed'); return res.json(); })
-      .then((q: QuoteResult) => setQuote(q))
-      .catch(() => { /* fee row stays as Calculating… */ });
-
+    setGSummary(summariseGTx(r.xdr, r.network).lines);
     setStep('review');
   }, []);
 
-  function sendGResult(signedXdr: string) {
+  function sendResult(signedXdr: string) {
     const msg = { type: 'orbi_g_signed', signedXdr, walletAddress: req?.walletAddress };
-    if (req?.channelId) {
-      const bc = new BroadcastChannel(req.channelId);
-      bc.postMessage(msg);
-      bc.close();
-    }
-    try { if (window.opener) window.opener.postMessage(msg, '*'); } catch { /* COOP */ }
-    setTimeout(() => window.close(), 500);
-  }
-
-  function sendSmartResult(signedAuthEntryXdr: string, quoteId: string, argsXdr: string[], nativeSacId: string) {
-    const msg = { type: 'orbi_signed', signedAuthEntryXdr, quoteId, argsXdr, nativeSacId };
     if (req?.channelId) {
       const bc = new BroadcastChannel(req.channelId);
       bc.postMessage(msg);
@@ -216,8 +113,8 @@ export default function SignPage() {
     window.close();
   }
 
-  async function handleGSign() {
-    if (!req || req.mode !== 'g') return;
+  async function handleSign() {
+    if (!req) return;
     setStep('signing');
     setError('');
     try {
@@ -240,93 +137,17 @@ export default function SignPage() {
         return;
       }
 
-      sendGResult(signedXdr);
+      sendResult(signedXdr);
       setStep('done');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Signing failed');
       setStep('error');
     }
-  }
-
-  async function handleSmartSign() {
-    if (!req || req.mode !== 'smart') return;
-    setStep('signing');
-    setError('');
-    try {
-      const wallet = loadWallet();
-      if (!wallet) throw new Error('Not signed in');
-
-      const args = req.argsXdr.map(a => xdr.ScVal.fromXDR(Buffer.from(a, 'base64')));
-
-      let resolvedQuote = quote;
-      if (!resolvedQuote) {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (req.apiKey) headers['Authorization'] = `Bearer ${req.apiKey}`;
-        const quoteRes = await fetch(`${RELAY_URL}/v1/quote`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            walletAddress: req.walletAddress,
-            contractId: req.contractId,
-            functionName: req.functionName,
-            argsXdr: req.argsXdr,
-          }),
-        });
-        if (!quoteRes.ok) throw new Error('Failed to get fee quote');
-        resolvedQuote = await quoteRes.json() as QuoteResult;
-        setQuote(resolvedQuote);
-      }
-      if (!resolvedQuote) throw new Error('Failed to get fee quote');
-
-      const entry = xdr.SorobanAuthorizationEntry.fromXDR(Buffer.from(resolvedQuote.authEntryXdr, 'base64'));
-      const { authEntryXdr: signedXdr, argsXdr: signedArgsXdr } = await signAuthEntryWithPasskey({
-        entry,
-        args,
-        credentialId: wallet.credentialId,
-        passkeyId: wallet.passkeyId,
-        currentLedger: resolvedQuote.currentLedger,
-      });
-
-      const redirectUrl = new URLSearchParams(window.location.search).get('redirect');
-      if (redirectUrl) {
-        const url = new URL(redirectUrl);
-        url.searchParams.set('signedXdr', signedXdr);
-        url.searchParams.set('quoteId', resolvedQuote.quoteId);
-        url.searchParams.set('argsXdr', JSON.stringify(signedArgsXdr));
-        url.searchParams.set('nativeSacId', resolvedQuote.nativeSacId);
-        url.searchParams.set('walletAddress', req.walletAddress);
-        window.location.href = url.toString();
-        return;
-      }
-
-      sendSmartResult(signedXdr, resolvedQuote.quoteId, signedArgsXdr, resolvedQuote.nativeSacId);
-      setStep('done');
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Signing failed');
-      setStep('error');
-    }
-  }
-
-  function handleSign() {
-    if (req?.mode === 'g') return handleGSign();
-    return handleSmartSign();
   }
 
   const appName = req?.origin
     ? (() => { try { return new URL(req.origin).hostname; } catch { return req.origin; } })()
     : 'this app';
-
-  // Smart wallet transfer display
-  const isTransfer = req?.mode === 'smart' && req.functionName === 'transfer' && req.argsXdr.length >= 3;
-  let transferAmount = '';
-  if (isTransfer && req?.mode === 'smart') {
-    try {
-      const amountScVal = xdr.ScVal.fromXDR(Buffer.from(req.argsXdr[2], 'base64'));
-      const i128 = amountScVal.i128();
-      const stroops = BigInt(i128.lo().toString());
-      transferAmount = (Number(stroops) / STROOPS_PER_XLM).toFixed(2);
-    } catch { /* ignore */ }
-  }
 
   return (
     <main className="flex flex-col items-center justify-center min-h-screen px-6 bg-[#020817]">
@@ -343,83 +164,23 @@ export default function SignPage() {
             <div className="text-center">
               <h1 className="text-xl font-bold text-white">Approve Transaction</h1>
               <p className="text-slate-400 text-sm mt-1">{appName} is requesting your signature</p>
-              {!trusted && (
-                <p className="mt-2 text-xs text-yellow-500/80 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-1.5">
-                  New connection — {appName} hasn&apos;t connected before
-                </p>
-              )}
-              {trusted && (
-                <p className="mt-2 text-xs text-green-500/80 bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-1.5">
-                  Trusted — you&apos;ve connected to {appName} before
-                </p>
-              )}
             </div>
 
             <div className="w-full rounded-2xl bg-slate-800/50 border border-slate-700 p-4 flex flex-col gap-3 text-sm">
-              {/* G wallet — show decoded ops */}
-              {req.mode === 'g' && (
-                <>
-                  {gSummary.map((line, i) => (
-                    <div key={i} className="flex justify-between">
-                      <span className="text-slate-400">{i === 0 ? 'Action' : ''}</span>
-                      <span className="text-white font-medium">{line}</span>
-                    </div>
-                  ))}
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Network</span>
-                    <span className="text-white capitalize">{req.network}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Fee</span>
-                    <span className="text-white">0.00001 XLM</span>
-                  </div>
-                </>
-              )}
-
-              {/* Smart wallet — existing display */}
-              {req.mode === 'smart' && (
-                <>
-                  {isTransfer ? (
-                    <>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Action</span>
-                        <span className="text-white font-medium">Send XLM</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Amount</span>
-                        <span className="text-white font-medium">{transferAmount} XLM</span>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Function</span>
-                        <span className="text-white font-mono text-xs">{req.functionName}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Contract</span>
-                        <span className="text-white font-mono text-xs">{req.contractId.slice(0, 8)}…</span>
-                      </div>
-                    </>
-                  )}
-                  <div className="flex justify-between items-start">
-                    <span className="text-slate-400">Network fee</span>
-                    {quote ? (
-                      quote.sponsored ? (
-                        <div className="text-right">
-                          <span className="text-slate-500 line-through text-xs">{quote.feeXlm} XLM</span>
-                          <p className="text-green-400 text-xs mt-0.5">Sponsored by {quote.sponsorName}</p>
-                        </div>
-                      ) : (
-                        <span className="text-white">{quote.feeXlm} XLM</span>
-                      )
-                    ) : (
-                      <span className="text-slate-600 animate-pulse text-xs">Calculating…</span>
-                    )}
-                  </div>
-                </>
-              )}
-
+              {gSummary.map((line, i) => (
+                <div key={i} className="flex justify-between">
+                  <span className="text-slate-400">{i === 0 ? 'Action' : ''}</span>
+                  <span className="text-white font-medium">{line}</span>
+                </div>
+              ))}
+              <div className="flex justify-between">
+                <span className="text-slate-400">Network</span>
+                <span className="text-white capitalize">{req.network}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Fee</span>
+                <span className="text-white">0.00001 XLM</span>
+              </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Requested by</span>
                 <span className="text-white">{appName}</span>

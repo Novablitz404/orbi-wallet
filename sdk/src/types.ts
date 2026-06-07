@@ -1,29 +1,18 @@
 export type OrbiNetwork = 'testnet' | 'mainnet';
 
 export interface OrbiClientConfig {
-  /** Orbi relay API URL — https://api.orbiwallet.xyz */
-  apiUrl: string;
+  /** Stellar network the dApp is operating on. Defaults to 'testnet'. */
   network?: OrbiNetwork;
 }
 
-export interface QuoteResult {
-  quoteId: string;
-  feeStroops: number;
-  feeXlm: string;
-  expiresAtLedger: number;
-  currentLedger: number;
-  nativeSacId: string;
-  feeCollectorAddress: string;
-  authEntryXdr: string;
+export interface ConnectedWallet {
+  walletAddress: string;
+  credentialId: string;
+  passkeyId: string;
+  email: string;
 }
 
-export interface BundleResult {
-  opId: string;
-}
-
-export interface OpStatus {
-  opId: string;
-  status: 'pending' | 'batched' | 'confirmed' | 'failed';
-  txHash: string | null;
-  error: string | null;
+export interface SignResult {
+  signedXdr: string;
+  walletAddress: string;
 }
