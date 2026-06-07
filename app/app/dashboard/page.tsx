@@ -64,17 +64,12 @@ const XLM_SEND_TOKEN: SendToken = {
 interface SwapQuote {
   destAmount: string;
   path: Asset[];
-  // Orbi's service fee for this swap, in XLM — see computeSwapFeeXLM.
-  feeXLM: string;
 }
 
 // Tolerance applied to a quote's destination amount to compute `destMin` —
 // protects the swap from failing if the price moves between quote and submission.
 const SWAP_SLIPPAGE = 0.01;
 
-// Orbi's swap service fee: 1% of the swap's XLM-equivalent value, paid in XLM
-// to the treasury alongside the swap — see computeSwapFeeXLM.
-const SWAP_FEE_RATE = 0.01;
 const TREASURY_ADDRESS = 'GAVMCJ4TTPRQ24R5YYCT7ELINDB2WIXHIIWUEC3UCC7NRTJYPDTE54XL';
 
 // Stellar locks this much XLM as a reserve for every new trustline an account
@@ -118,6 +113,10 @@ export default function DashboardPage() {
   const [swapFromAmount, setSwapFromAmount] = useState('');
   const [swapQuote, setSwapQuote] = useState<SwapQuote | null>(null);
   const [swapQuoteLoading, setSwapQuoteLoading] = useState(false);
+  // Orbi's disclosed "Swap fee" — Horizon's live fee_stats.max_fee.mode, in XLM.
+  // This is a network-wide stat (not specific to any one swap), so it's fetched
+  // once on load rather than per-quote — see the mount effect below.
+  const [swapFeeXLM, setSwapFeeXLM] = useState<string | null>(null);
   const [swapError, setSwapError] = useState('');
   const [swapping, setSwapping] = useState(false);
   const [swapTokenSelector, setSwapTokenSelector] = useState<'from' | 'to' | null>(null);
@@ -234,6 +233,16 @@ export default function DashboardPage() {
         if (typeof byCode.XLM === 'number') setXlmPrice(byCode.XLM);
       })
       .catch(() => { setXlmPrice(null); setTokenPrices({}); });
+
+    // Orbi's "Swap fee" is disclosed honestly as fee_stats.max_fee.mode — the
+    // same live, queryable number wallets like Freighter show as their fee
+    // estimate, rather than a markup dressed up as a "network fee".
+    fetch(`${HORIZON_URL}/fee_stats`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((d: { max_fee?: { mode?: string } }) => {
+        if (d.max_fee?.mode) setSwapFeeXLM((Number(d.max_fee.mode) / 1e7).toFixed(7));
+      })
+      .catch(() => {});
   }, [router]);
 
   // Auto-dismiss after ~5s — except 'pending', which reflects an ongoing
@@ -403,32 +412,6 @@ export default function DashboardPage() {
     };
   }
 
-  // Orbi's 1% service fee, expressed in XLM and priced off the swap's own DEX
-  // route rather than an external feed: if XLM is already one leg of the swap
-  // we read the fee straight off that amount; otherwise we ask the path-finder
-  // for the XLM-equivalent of what's being sent and take 1% of that.
-  async function computeSwapFeeXLM(from: SendToken, to: SendToken, fromAmount: string, destAmount: string): Promise<string | null> {
-    let xlmValue: number;
-    if (from.code === 'XLM') {
-      xlmValue = parseFloat(fromAmount);
-    } else if (to.code === 'XLM') {
-      xlmValue = parseFloat(destAmount);
-    } else {
-      const xlmRoute = await fetchPathQuote(from, XLM_SEND_TOKEN, fromAmount);
-      if (!xlmRoute) return null;
-      xlmValue = parseFloat(xlmRoute.destAmount);
-    }
-    return (xlmValue * SWAP_FEE_RATE).toFixed(7);
-  }
-
-  async function fetchSwapQuote(from: SendToken, to: SendToken, amount: string): Promise<SwapQuote | null> {
-    const quote = await fetchPathQuote(from, to, amount);
-    if (!quote) return null;
-    const feeXLM = await computeSwapFeeXLM(from, to, amount, quote.destAmount);
-    if (feeXLM == null) return null;
-    return { destAmount: quote.destAmount, path: quote.path, feeXLM };
-  }
-
   function flipSwapTokens() {
     if (!swapToToken) return;
     setSwapFromToken(swapToToken);
@@ -456,7 +439,7 @@ export default function DashboardPage() {
     const t = setTimeout(() => {
       setSwapQuoteLoading(true);
       setSwapError('');
-      fetchSwapQuote(swapFromToken, swapToToken, swapFromAmount)
+      fetchPathQuote(swapFromToken, swapToToken, swapFromAmount)
         .then(quote => {
           if (swapQuoteSeq.current !== seq) return;
           setSwapQuote(quote);
@@ -534,7 +517,7 @@ export default function DashboardPage() {
   }
 
   function handleSwapPreview() {
-    if (!walletAddress || !swapToToken || !swapFromAmount || !swapQuote) return;
+    if (!walletAddress || !swapToToken || !swapFromAmount || !swapQuote || !swapFeeXLM) return;
     setSwapError('');
     setPanelStep('swap-preview');
     swapAccountRef.current = fetchSendAccount(walletAddress);
@@ -544,11 +527,11 @@ export default function DashboardPage() {
   // send `swapFromToken` and the DEX converts it along the quoted path,
   // crediting `swapToToken`. We bundle in two more operations when needed —
   // a trustline for a destination asset the wallet doesn't hold yet, and
-  // Orbi's service fee to the treasury — all atomic in one signed transaction
-  // (everything lands together, or nothing does). Same build/sign/submit
-  // pipeline as a send.
+  // Orbi's disclosed Swap fee to the treasury — all atomic in one signed
+  // transaction (everything lands together, or nothing does). Same
+  // build/sign/submit pipeline as a send.
   async function handleSwapConfirm() {
-    if (!walletAddress || !swapToToken || !swapQuote) return;
+    if (!walletAddress || !swapToToken || !swapQuote || !swapFeeXLM) return;
 
     setSwapping(true);
     try {
@@ -577,7 +560,7 @@ export default function DashboardPage() {
       builder.addOperation(Operation.payment({
         destination: TREASURY_ADDRESS,
         asset: Asset.native(),
-        amount: swapQuote.feeXLM,
+        amount: swapFeeXLM,
       }));
 
       const tx = builder.setTimeout(30).build();
@@ -610,15 +593,15 @@ export default function DashboardPage() {
   const xlmUsd = xlmPrice != null ? xlmFloat * xlmPrice : null;
 
   // Swap fee breakdown for the preview panel — the transaction always bundles
-  // a path payment + Orbi's treasury-fee payment (2 ops), plus a changeTrust
-  // op (a 3rd) when the destination asset needs a new trustline. "Network fee"
-  // shown to the user combines the real per-op network cost with Orbi's cut;
-  // the trustline reserve is shown separately since it's locked, not spent.
+  // a path payment + Orbi's disclosed Swap-fee payment to the treasury (2 ops),
+  // plus a changeTrust op (a 3rd) when the destination asset needs a new
+  // trustline. Each cost gets its own honestly-labeled line: "Network fee" is
+  // the real per-op network cost (never inflated with Orbi's cut), "Swap fee"
+  // is Orbi's disclosed charge (live fee_stats.max_fee.mode), and the trustline
+  // reserve is shown separately since it's locked, not spent.
   const swapNeedsTrustline = swapToToken ? needsTrustline(swapToToken) : false;
   const swapOpCount = 2 + (swapNeedsTrustline ? 1 : 0);
-  const swapNetworkFeeXLM = swapQuote
-    ? swapOpCount * (Number(BASE_FEE) / 1e7) + parseFloat(swapQuote.feeXLM)
-    : null;
+  const swapNetworkFeeXLM = swapQuote ? swapOpCount * (Number(BASE_FEE) / 1e7) : null;
 
   // Per-token portfolio: balance, price (where known), and USD value.
   const tokenEntries = getDisplayTokens().map(t => {
@@ -1380,6 +1363,10 @@ export default function DashboardPage() {
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Network fee</span>
                   <span className="text-white">{swapNetworkFeeXLM != null ? fmtXLM(swapNetworkFeeXLM) : '—'} XLM</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Swap fee</span>
+                  <span className="text-white">{swapFeeXLM != null ? fmtXLM(parseFloat(swapFeeXLM)) : '—'} XLM</span>
                 </div>
                 {swapNeedsTrustline && (
                   <div className="flex justify-between text-sm">
