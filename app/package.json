@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@orbi-wallet/sdk": "*",
     "@simplewebauthn/browser": "^13.3.0",
     "@stellar/stellar-sdk": "^15.1.0",
     "buffer": "^6.0.3",

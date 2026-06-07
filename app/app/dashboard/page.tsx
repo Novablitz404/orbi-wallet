@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { loadWallet, clearWallet, getConnections, type StoredConnection } from '../../lib/storage';
+import { getConnections, type StoredConnection } from '../../lib/storage';
 import { Networks, Asset, TransactionBuilder, Operation, Account, BASE_FEE } from '@stellar/stellar-sdk';
+import { OrbiClient } from '@orbi-wallet/sdk';
 import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, TOKEN_PRICE_IDS } from '../../lib/tokens';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
@@ -11,31 +12,27 @@ import 'react-loading-skeleton/dist/skeleton.css';
 const dicebearUrl = (seed: string, size: number) =>
   `https://api.dicebear.com/9.x/rings/svg?seed=${encodeURIComponent(seed)}&size=${size}`;
 
-const KEYS_URL = 'https://keys.orbiwallet.xyz';
-const ACCOUNT_URL = 'https://account.orbiwallet.xyz';
 const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? 'testnet') as 'testnet' | 'mainnet';
+const orbi = new OrbiClient({ network: NETWORK });
 const NETWORK_PASSPHRASE = NETWORK === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 const HORIZON_URL = NETWORK === 'mainnet' ? 'https://horizon.stellar.org' : 'https://horizon-testnet.stellar.org';
 const NATIVE_SAC_ID = Asset.native().contractId(NETWORK_PASSPHRASE);
+// A classic Stellar payment always costs exactly BASE_FEE (100 stroops) — no
+// quote/estimation needed, unlike the relay-bundled fees of the old smart wallet.
+const SEND_FEE_XLM = '0.00001';
 
 function truncate(addr: string) { return `${addr.slice(0, 6)}...${addr.slice(-4)}`; }
 function fmt(n: number): string { return parseFloat(n.toFixed(2)).toString(); }
 
-interface Quote { quoteId: string; feeXlm: string; nativeSacId: string; }
 type PanelStep = 'send-form' | 'send-preview' | 'receive';
 
 interface TxRecord {
   id: string;
   direction: 'outgoing' | 'incoming';
-  type: 'transfer' | 'contract_call';
-  status: 'pending' | 'batched' | 'confirmed' | 'failed';
   assetCode?: string;
   amount?: string;
   to?: string;
   from?: string;
-  functionName?: string;
-  contractId?: string;
-  txHash?: string | null;
   createdAt: string;
 }
 
@@ -63,7 +60,7 @@ const XLM_SEND_TOKEN: SendToken = {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [wallet, setWallet] = useState<ReturnType<typeof loadWallet>>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [xlmBalance, setXlmBalance] = useState<string | null>(null);
   const [xlmPrice, setXlmPrice] = useState<number | null>(null);
   const [tokenPrices, setTokenPrices] = useState<Record<string, number>>({});
@@ -80,8 +77,8 @@ export default function DashboardPage() {
   const [panelTab, setPanelTab] = useState<'send' | 'receive'>('send');
   const [sendTo, setSendTo] = useState('');
   const [sendAmount, setSendAmount] = useState('');
-  const [sendQuote, setSendQuote] = useState<Quote | null>(null);
   const [sendError, setSendError] = useState('');
+  const [sending, setSending] = useState(false);
   const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
   const [selectedToken, setSelectedToken] = useState<SendToken>(XLM_SEND_TOKEN);
   const [tokenSelectorOpen, setTokenSelectorOpen] = useState(false);
@@ -91,7 +88,7 @@ export default function DashboardPage() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [transactions, setTransactions] = useState<TxRecord[] | null>(null);
   const [txLoading, setTxLoading] = useState(false);
-  const [txPage, setTxPage] = useState(1);
+  const [txNextUrl, setTxNextUrl] = useState<string | null>(null);
   const [txHasMore, setTxHasMore] = useState(false);
 
   useEffect(() => {
@@ -104,52 +101,64 @@ export default function DashboardPage() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  async function fetchHistory(walletAddress: string, page = 1) {
+  const TX_PAGE_SIZE = 10;
+
+  // Pass `url` to fetch a specific page (e.g. Horizon's `_links.next.href`,
+  // which already encodes the correct cursor); omit it to load the first page.
+  async function fetchHistory(walletAddress: string, url?: string) {
     setTxLoading(true);
     try {
-      const cursor = page > 1 ? `&cursor=TODO` : ''; // simple pagination for now
       const res = await fetch(
-        `${HORIZON_URL}/accounts/${walletAddress}/payments?order=desc&limit=10${cursor}`,
+        url ?? `${HORIZON_URL}/accounts/${walletAddress}/payments?order=desc&limit=${TX_PAGE_SIZE}`,
       );
-      if (!res.ok) { if (page === 1) setTransactions([]); return; }
+      if (!res.ok) { if (!url) { setTransactions([]); setTxHasMore(false); } return; }
       const data = await res.json() as {
         _embedded: { records: Array<{
           id: string; type: string; created_at: string;
           from?: string; to?: string; amount?: string; asset_type?: string;
+          // create_account shapes its fields differently — it's how every G
+          // wallet's very first (funding) transaction appears in this feed.
+          account?: string; funder?: string; starting_balance?: string;
         }> };
         _links: { next?: { href?: string } };
       };
       const records = data._embedded?.records ?? [];
-      const txs: TxRecord[] = records.map(r => ({
-        id: r.id,
-        direction: r.to === walletAddress ? 'incoming' : 'outgoing',
-        type: 'transfer',
-        status: 'confirmed',
-        assetCode: r.asset_type === 'native' ? 'XLM' : undefined,
-        amount: r.amount ? String(Math.round(parseFloat(r.amount) * 1e7)) : undefined,
-        to: r.to,
-        from: r.from,
-        createdAt: r.created_at,
-      }));
-      setTransactions(prev => page === 1 ? txs : [...(prev ?? []), ...txs]);
-      setTxHasMore(!!data._links?.next?.href);
-      setTxPage(page);
+      const txs: TxRecord[] = records.map(r => {
+        const isCreateAccount = r.type === 'create_account';
+        const to = isCreateAccount ? r.account : r.to;
+        const from = isCreateAccount ? r.funder : r.from;
+        const amount = isCreateAccount ? r.starting_balance : r.amount;
+        return {
+          id: r.id,
+          direction: to === walletAddress ? 'incoming' : 'outgoing',
+          assetCode: (isCreateAccount || r.asset_type === 'native') ? 'XLM' : undefined,
+          amount: amount ? String(Math.round(parseFloat(amount) * 1e7)) : undefined,
+          to,
+          from,
+          createdAt: r.created_at,
+        };
+      });
+      setTransactions(prev => url ? [...(prev ?? []), ...txs] : txs);
+      setTxNextUrl(data._links?.next?.href ?? null);
+      // Horizon always returns a `next` link (more could arrive later), so the
+      // real "more right now" signal is whether this page came back full.
+      setTxHasMore(records.length === TX_PAGE_SIZE);
     } catch {
-      if (page === 1) setTransactions([]);
+      if (!url) { setTransactions([]); setTxHasMore(false); }
     } finally {
       setTxLoading(false);
     }
   }
 
   useEffect(() => {
-    const w = loadWallet();
-    if (!w) { router.replace('/'); return; }
-    setWallet(w);
-    setConnections(getConnections(w.walletAddress));
+    const addr = orbi.getAddress();
+    if (!addr) { router.replace('/'); return; }
+    setWalletAddress(addr);
+    setConnections(getConnections(addr));
 
     // Horizon's account record carries the native balance plus every trustline
     // balance in one call — no separate per-token lookups needed for a G wallet.
-    fetch(`${HORIZON_URL}/accounts/${w.walletAddress}`)
+    fetch(`${HORIZON_URL}/accounts/${addr}`)
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((d: { balances?: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string; balance: string }> }) => {
         const balances = d.balances ?? [];
@@ -178,26 +187,7 @@ export default function DashboardPage() {
         if (typeof byCode.XLM === 'number') setXlmPrice(byCode.XLM);
       })
       .catch(() => { setXlmPrice(null); setTokenPrices({}); });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
-
-  // G wallet submits directly to Horizon — sign-callback redirects back with
-  // either a txHash (success) or txError (failure) immediately, no polling needed.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const txError = params.get('txError');
-    const txHash = params.get('txHash');
-
-    // Clean URL immediately
-    window.history.replaceState({}, '', '/dashboard');
-
-    if (txError) {
-      setToast({ type: 'error', message: decodeURIComponent(txError) });
-    } else if (txHash) {
-      setToast({ type: 'success', message: 'Sent!', txHash });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Auto-dismiss success toast after 5 seconds
   useEffect(() => {
@@ -207,27 +197,27 @@ export default function DashboardPage() {
   }, [toast]);
 
   useEffect(() => {
-    if (activeNav === 'activity' && wallet && transactions === null) {
-      fetchHistory(wallet.walletAddress);
+    if (activeNav === 'activity' && walletAddress && transactions === null) {
+      fetchHistory(walletAddress);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeNav, wallet]);
+  }, [activeNav, walletAddress]);
 
   function copyAddress() {
-    if (!wallet) return;
-    navigator.clipboard.writeText(wallet.walletAddress);
+    if (!walletAddress) return;
+    navigator.clipboard.writeText(walletAddress);
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   }
 
   function signOut() {
-    clearWallet();
-    window.location.href = 'https://keys.orbiwallet.xyz/signout?redirect=https://account.orbiwallet.xyz';
+    orbi.disconnect();
+    router.replace('/');
   }
 
   function openPanel(tab: 'send' | 'receive') {
     setPanelTab(tab);
     setPanelStep(tab === 'send' ? 'send-form' : 'receive');
-    setSendTo(''); setSendAmount(''); setSendQuote(null); setSendError('');
+    setSendTo(''); setSendAmount(''); setSendError('');
     setSelectedToken(XLM_SEND_TOKEN);
     setTokenSelectorOpen(false);
     setPanelOpen(true);
@@ -275,22 +265,23 @@ export default function DashboardPage() {
   }
 
   function handlePreview() {
-    if (!wallet || !sendTo.trim() || !sendAmount) return;
+    if (!walletAddress || !sendTo.trim() || !sendAmount) return;
     setSendError('');
-    // Fee is always BASE_FEE (0.00001 XLM) for a classic Stellar payment.
-    setSendQuote({ quoteId: '', feeXlm: '0.00001', nativeSacId: '' });
     setPanelStep('send-preview');
   }
 
+  // Builds the payment XDR, has the user approve it with their passkey via the
+  // Orbi popup (OrbiClient.signTransaction), then submits the signed result to
+  // Horizon directly — no relay, no full-page redirect round-trip.
   async function handleConfirm() {
-    if (!wallet || !sendQuote) return;
+    if (!walletAddress) return;
 
-    setSendError('');
+    setSending(true);
     try {
-      const accountRes = await fetch(`${HORIZON_URL}/accounts/${wallet.walletAddress}`);
+      const accountRes = await fetch(`${HORIZON_URL}/accounts/${walletAddress}`);
       if (!accountRes.ok) throw new Error('Account not found on Stellar — deposit 1 XLM first');
       const accountData = await accountRes.json() as { sequence: string };
-      const account = new Account(wallet.walletAddress, accountData.sequence);
+      const account = new Account(walletAddress, accountData.sequence);
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -305,17 +296,25 @@ export default function DashboardPage() {
         .setTimeout(30)
         .build();
 
-      const txXdr = tx.toXDR();
-      const params = new URLSearchParams({
-        xdr: txXdr,
-        network: NETWORK,
-        redirect: `${ACCOUNT_URL}/sign-callback`,
-        origin: window.location.origin,
-        walletAddress: wallet.walletAddress,
+      const { signedXdr } = await orbi.signTransaction({ xdr: tx.toXDR(), walletAddress });
+
+      const submitRes = await fetch(`${HORIZON_URL}/transactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ tx: signedXdr }),
       });
-      window.location.href = `${KEYS_URL}/sign?${params}`;
+      const submitData = await submitRes.json() as { hash?: string; extras?: { result_codes?: unknown }; title?: string };
+      if (!submitData.hash) {
+        throw new Error(JSON.stringify(submitData.extras?.result_codes ?? submitData.title ?? 'Submit failed'));
+      }
+
+      setPanelOpen(false);
+      setTransactions(null); // refetch activity next time it's viewed, so the new tx shows up
+      setToast({ type: 'success', message: 'Sent!', txHash: submitData.hash });
     } catch (e: unknown) {
-      setSendError(e instanceof Error ? e.message : 'Failed to build transaction');
+      setToast({ type: 'error', message: e instanceof Error ? e.message : 'Failed to send' });
+    } finally {
+      setSending(false);
     }
   }
 
@@ -342,7 +341,7 @@ export default function DashboardPage() {
     ? (parseFloat(sendAmount) * xlmPrice).toFixed(2)
     : null;
 
-  if (!wallet) return null;
+  if (!walletAddress) return null;
 
   return (
     <div className="flex h-[100dvh] md:h-auto md:min-h-screen bg-[#020817] relative overflow-hidden md:overflow-visible">
@@ -381,8 +380,8 @@ export default function DashboardPage() {
         <div className="hidden md:flex items-center justify-end px-10 pt-6 pb-2">
           <div className="relative" ref={dropdownRef}>
             <button onClick={() => setDropdownOpen(o => !o)} className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-slate-800/60 border border-slate-700/50 text-slate-300 text-sm hover:bg-slate-700/50 transition-colors">
-              <img src={dicebearUrl(wallet.walletAddress, 24)} alt="avatar" className="w-6 h-6 rounded-full" />
-              <span className="font-mono">{truncate(wallet.walletAddress)}</span>
+              <img src={dicebearUrl(walletAddress, 24)} alt="avatar" className="w-6 h-6 rounded-full" />
+              <span className="font-mono">{truncate(walletAddress)}</span>
               <svg className={`w-4 h-4 text-slate-500 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
             </button>
             {dropdownOpen && (
@@ -391,10 +390,10 @@ export default function DashboardPage() {
                   <p className="text-white font-semibold text-base mb-4">Your Account</p>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <img src={dicebearUrl(wallet.walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
+                      <img src={dicebearUrl(walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
                       <div>
                         <button onClick={copyAddress} className="flex items-center gap-1.5 text-white text-sm font-medium hover:text-slate-300 transition-colors">
-                          <span className="font-mono">{truncate(wallet.walletAddress)}</span>
+                          <span className="font-mono">{truncate(walletAddress)}</span>
                           <span className="text-slate-500">{copied ? '✓' : '⎘'}</span>
                         </button>
                       </div>
@@ -422,8 +421,8 @@ export default function DashboardPage() {
           <img src="/Orbi%20logo%20-%20Landscape%20white.png" alt="Orbi" className="h-6 w-auto" />
           <div className="relative" ref={mobileDropdownRef}>
             <button onClick={() => setDropdownOpen(o => !o)} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800/60 border border-slate-700/50 text-slate-300 text-sm hover:bg-slate-700/50 transition-colors">
-              <img src={dicebearUrl(wallet.walletAddress, 22)} alt="avatar" className="w-5 h-5 rounded-full" />
-              <span className="font-mono">{truncate(wallet.walletAddress)}</span>
+              <img src={dicebearUrl(walletAddress, 22)} alt="avatar" className="w-5 h-5 rounded-full" />
+              <span className="font-mono">{truncate(walletAddress)}</span>
               <svg className={`w-4 h-4 text-slate-500 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
             </button>
             {dropdownOpen && (
@@ -432,10 +431,10 @@ export default function DashboardPage() {
                   <p className="text-white font-semibold text-base mb-4">Your Account</p>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <img src={dicebearUrl(wallet.walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
+                      <img src={dicebearUrl(walletAddress, 36)} alt="avatar" className="w-9 h-9 rounded-full shrink-0" />
                       <div>
                         <button onClick={copyAddress} className="flex items-center gap-1.5 text-white text-sm font-medium hover:text-slate-300 transition-colors">
-                          <span className="font-mono">{truncate(wallet.walletAddress)}</span>
+                          <span className="font-mono">{truncate(walletAddress)}</span>
                           <span className="text-slate-500">{copied ? '✓' : '⎘'}</span>
                         </button>
                       </div>
@@ -537,7 +536,7 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-white font-medium">Activity</h2>
                   <button
-                    onClick={() => wallet && fetchHistory(wallet.walletAddress, 1)}
+                    onClick={() => walletAddress && fetchHistory(walletAddress)}
                     disabled={txLoading}
                     className="text-xs text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-40"
                   >
@@ -572,34 +571,27 @@ export default function DashboardPage() {
 
                 {transactions && transactions.map(tx => {
                   const isIncoming = tx.direction === 'incoming';
-                  const isTransfer = tx.type === 'transfer';
                   const humanAmount = tx.amount && tx.assetCode
                     ? `${fmt(Number(BigInt(tx.amount)) / 1e7)} ${tx.assetCode}`
                     : null;
                   const counterparty = isIncoming ? tx.from : tx.to;
-                  const label = isTransfer ? (isIncoming ? 'Received' : 'Sent') : (tx.functionName ?? 'Contract call');
+                  const label = isIncoming ? 'Received' : 'Sent';
                   const date = new Date(tx.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
                   return (
                     <div key={tx.id} className="flex items-center gap-4 px-2 py-3 rounded-xl hover:bg-slate-800/20 transition-colors">
                       <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${isIncoming ? 'bg-green-500/10' : 'bg-slate-800'}`}>
-                        {isTransfer ? (
-                          <svg className={`w-4 h-4 ${isIncoming ? 'text-green-400' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            {isIncoming
-                              ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                              : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />}
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                          </svg>
-                        )}
+                        <svg className={`w-4 h-4 ${isIncoming ? 'text-green-400' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          {isIncoming
+                            ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                            : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />}
+                        </svg>
                       </div>
 
                       <div className="flex-1 min-w-0">
                         <p className="text-white text-sm font-medium">{label}</p>
                         <p className="text-slate-500 text-xs truncate font-mono">
-                          {counterparty ? truncate(counterparty) : tx.contractId ? truncate(tx.contractId) : '—'}
+                          {counterparty ? truncate(counterparty) : '—'}
                         </p>
                       </div>
 
@@ -609,9 +601,7 @@ export default function DashboardPage() {
                             {isIncoming ? '+' : '-'}{humanAmount}
                           </p>
                         )}
-                        <p className={`text-xs ${tx.status === 'failed' ? 'text-red-400' : tx.status !== 'confirmed' ? 'text-yellow-400' : 'text-slate-500'}`}>
-                          {tx.status !== 'confirmed' ? tx.status : date}
-                        </p>
+                        <p className="text-xs text-slate-500">{date}</p>
                       </div>
                     </div>
                   );
@@ -619,7 +609,7 @@ export default function DashboardPage() {
 
                 {txHasMore && (
                   <button
-                    onClick={() => wallet && fetchHistory(wallet.walletAddress, txPage + 1)}
+                    onClick={() => walletAddress && txNextUrl && fetchHistory(walletAddress, txNextUrl)}
                     disabled={txLoading}
                     className="w-full mt-3 py-2.5 rounded-xl border border-slate-700 text-slate-400 text-sm hover:border-slate-500 hover:text-slate-300 transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
                   >
@@ -774,7 +764,7 @@ export default function DashboardPage() {
         )}
 
         {/* ── Send preview / confirm ── */}
-        {panelStep === 'send-preview' && sendQuote && (
+        {panelStep === 'send-preview' && (
           <>
             <div className="flex items-center gap-3 p-5 border-b border-slate-800">
               <button onClick={() => setPanelStep('send-form')} className="text-slate-400 hover:text-white transition-colors">
@@ -816,11 +806,11 @@ export default function DashboardPage() {
               <div className="flex flex-col gap-3 border-t border-slate-800 pt-4">
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Wallet used</span>
-                  <span className="text-white font-mono">{truncate(wallet.walletAddress)}</span>
+                  <span className="text-white font-mono">{truncate(walletAddress)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Network fee</span>
-                  <span className="text-white">{sendQuote.feeXlm} XLM</span>
+                  <span className="text-white">{SEND_FEE_XLM} XLM</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Network</span>
@@ -830,11 +820,19 @@ export default function DashboardPage() {
             </div>
 
             <div className="p-5 border-t border-slate-800 flex gap-3">
-              <button onClick={() => setPanelStep('send-form')} className="flex-1 py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-semibold transition-colors">
+              <button onClick={() => setPanelStep('send-form')} disabled={sending} className="flex-1 py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-semibold transition-colors">
                 Cancel
               </button>
-              <button onClick={handleConfirm} className="flex-1 py-4 rounded-2xl bg-white hover:bg-slate-100 text-slate-900 font-semibold transition-colors">
-                Confirm
+              <button onClick={handleConfirm} disabled={sending} className="flex-1 py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-semibold transition-colors flex items-center justify-center gap-2">
+                {sending ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                    Confirm in popup…
+                  </>
+                ) : 'Confirm'}
               </button>
             </div>
           </>
@@ -848,8 +846,8 @@ export default function DashboardPage() {
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
               </button>
               <div className="flex items-center gap-2 flex-1 justify-center">
-                <img src={dicebearUrl(wallet.walletAddress, 20)} alt="avatar" className="w-5 h-5 rounded-full" />
-                <span className="text-white text-sm font-medium font-mono">{truncate(wallet.walletAddress)}</span>
+                <img src={dicebearUrl(walletAddress, 20)} alt="avatar" className="w-5 h-5 rounded-full" />
+                <span className="text-white text-sm font-medium font-mono">{truncate(walletAddress)}</span>
               </div>
               <div className="w-5" />
             </div>
@@ -857,14 +855,14 @@ export default function DashboardPage() {
             <div className="flex-1 flex flex-col items-center p-6 gap-5 overflow-y-auto">
               <div className="p-4 bg-white rounded-2xl">
                 <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(wallet.walletAddress)}&qzone=1&color=000000&bgcolor=ffffff`}
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(walletAddress)}&qzone=1&color=000000&bgcolor=ffffff`}
                   alt="QR code"
                   className="w-[220px] h-[220px]"
                 />
               </div>
 
               <p className="text-white font-mono text-xs text-center break-all px-2 leading-relaxed">
-                {wallet.walletAddress}
+                {walletAddress}
               </p>
 
               <button
