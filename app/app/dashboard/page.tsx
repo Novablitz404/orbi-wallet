@@ -6,7 +6,7 @@ import { getConnections, type StoredConnection } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { Networks, Asset, TransactionBuilder, Operation, Account, BASE_FEE } from '@stellar/stellar-sdk';
 import { OrbiClient } from '@orbi-wallet/sdk';
-import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, TOKEN_PRICE_IDS } from '../../lib/tokens';
+import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, TOKEN_PRICE_IDS, TREASURY_ADDRESS } from '../../lib/tokens';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
@@ -69,8 +69,6 @@ interface SwapQuote {
 // Tolerance applied to a quote's destination amount to compute `destMin` —
 // protects the swap from failing if the price moves between quote and submission.
 const SWAP_SLIPPAGE = 0.01;
-
-const TREASURY_ADDRESS = 'GAVMCJ4TTPRQ24R5YYCT7ELINDB2WIXHIIWUEC3UCC7NRTJYPDTE54XL';
 
 // Stellar locks this much XLM as a reserve for every new trustline an account
 // opens — it isn't spent or sent anywhere, just no longer freely spendable.
@@ -146,6 +144,29 @@ export default function DashboardPage() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
+  // Horizon's account record carries the native balance plus every trustline
+  // balance in one call — no separate per-token lookups needed for a G wallet.
+  // Re-runnable on demand (not just on load) so a completed send/swap — which
+  // can change balances and add new trustlines — reflects immediately rather
+  // than waiting for the next full page load.
+  function refreshBalances(addr: string) {
+    fetch(`${HORIZON_URL}/accounts/${addr}`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((d: { balances?: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string; balance: string }> }) => {
+        const balances = d.balances ?? [];
+        const native = balances.find(b => b.asset_type === 'native');
+        setXlmBalance(native?.balance ?? '0.0000000');
+
+        const map: Record<string, string> = {};
+        for (const token of STELLAR_TOKENS) {
+          const trustline = balances.find(b => b.asset_code === token.code && b.asset_issuer === token.issuer);
+          if (trustline) map[token.sacId] = String(Math.round(parseFloat(trustline.balance) * 10 ** token.decimals));
+        }
+        setTokenBalances(map);
+      })
+      .catch(() => setXlmBalance('0.0000000'));
+  }
+
   const TX_PAGE_SIZE = 10;
 
   // Pass `url` to fetch a specific page (e.g. Horizon's `_links.next.href`,
@@ -202,23 +223,7 @@ export default function DashboardPage() {
     setWalletAddress(addr);
     setConnections(getConnections(addr));
 
-    // Horizon's account record carries the native balance plus every trustline
-    // balance in one call — no separate per-token lookups needed for a G wallet.
-    fetch(`${HORIZON_URL}/accounts/${addr}`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then((d: { balances?: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string; balance: string }> }) => {
-        const balances = d.balances ?? [];
-        const native = balances.find(b => b.asset_type === 'native');
-        setXlmBalance(native?.balance ?? '0.0000000');
-
-        const map: Record<string, string> = {};
-        for (const token of STELLAR_TOKENS) {
-          const trustline = balances.find(b => b.asset_code === token.code && b.asset_issuer === token.issuer);
-          if (trustline) map[token.sacId] = String(Math.round(parseFloat(trustline.balance) * 10 ** token.decimals));
-        }
-        setTokenBalances(map);
-      })
-      .catch(() => setXlmBalance('0.0000000'));
+    refreshBalances(addr);
 
     const priceIds = [...new Set(Object.values(TOKEN_PRICE_IDS))].join(',');
     fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${priceIds}&vs_currencies=usd`)
@@ -508,6 +513,7 @@ export default function DashboardPage() {
       }
 
       setTransactions(null); // refetch activity next time it's viewed, so the new tx shows up
+      if (walletAddress) refreshBalances(walletAddress); // reflect the new balance immediately, no manual refresh needed
       setToast({ type: 'success', title: 'Sent!', message: 'Your transaction was submitted to the network.', txHash: submitData.hash });
     } catch (e: unknown) {
       setToast({ type: 'error', title: 'Transaction failed', message: e instanceof Error ? e.message : 'Failed to send' });
@@ -581,6 +587,7 @@ export default function DashboardPage() {
       }
 
       setTransactions(null);
+      if (walletAddress) refreshBalances(walletAddress); // reflect the new balance/trustline immediately, no manual refresh needed
       setToast({ type: 'success', title: 'Swapped!', message: 'Your swap was submitted to the network.', txHash: submitData.hash });
     } catch (e: unknown) {
       setToast({ type: 'error', title: 'Swap failed', message: e instanceof Error ? e.message : 'Failed to swap' });

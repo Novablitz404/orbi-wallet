@@ -26,6 +26,10 @@ const PASSPHRASE = NETWORK === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 // XLM is native (no issuer) — use CoinMarketCap which has the proper Stellar logo
 export const XLM_ICON = 'https://s2.coinmarketcap.com/static/img/coins/64x64/512.png';
 
+// Where Orbi's swap fee is collected — shared so the sign-review UI can
+// recognize and hide this internal payment from the user-facing summary.
+export const TREASURY_ADDRESS = 'GAXMHMRR6R3KICSGTSX5IEH76FTD2TRFFWGJ7MRVICB2XHIS2A36YORK';
+
 // Stellar Expert pattern — works for any token they've indexed
 export const stellarExpertIcon = (code: string, issuer: string) =>
   `https://stellar.expert/img/assets/${code}-${issuer}.png`;

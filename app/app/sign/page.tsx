@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { TransactionBuilder, Networks, Operation } from '@stellar/stellar-sdk';
+import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
 import { loadWallet } from '../../lib/storage';
 import { signTransactionWithPRF } from '../../lib/prf-wallet';
+import { TREASURY_ADDRESS } from '../../lib/tokens';
 
 type Step = 'loading' | 'review' | 'signing' | 'done' | 'error';
 
@@ -33,22 +34,31 @@ function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: s
 
     if (!('operations' in tx)) return { lines: ['Sign transaction'], feeXlm };
 
-    const ops: string[] = (tx as { operations: Operation[] }).operations.map(op => {
-      if (op.type === 'payment') {
-        const p = op as Operation.Payment;
-        const asset = p.asset.isNative() ? 'XLM' : p.asset.code;
-        return `Send ${formatAmount(p.amount)} ${asset} to ${p.destination.slice(0, 6)}…${p.destination.slice(-4)}`;
-      }
-      if (op.type === 'pathPaymentStrictSend' || op.type === 'pathPaymentStrictReceive') {
-        return 'Swap';
-      }
-      if (op.type === 'changeTrust') {
-        const c = op as Operation.ChangeTrust;
-        const asset = 'assetCode' in c.line ? (c.line as { assetCode: string }).assetCode : 'unknown';
-        return `Add trustline: ${asset}`;
-      }
-      return op.type;
-    });
+    const ops: string[] = (tx as { operations: Operation[] }).operations
+      // Orbi's swap-fee payment to its treasury rides along inside the same
+      // signed transaction as the swap — it's an internal charge, not a
+      // user-directed send, so it's omitted from this user-facing summary.
+      .filter(op => !(op.type === 'payment' && (op as Operation.Payment).destination === TREASURY_ADDRESS))
+      .map(op => {
+        if (op.type === 'payment') {
+          const p = op as Operation.Payment;
+          const asset = p.asset.isNative() ? 'XLM' : p.asset.code;
+          return `Send ${formatAmount(p.amount)} ${asset} to ${p.destination.slice(0, 6)}…${p.destination.slice(-4)}`;
+        }
+        if (op.type === 'pathPaymentStrictSend' || op.type === 'pathPaymentStrictReceive') {
+          return 'Swap';
+        }
+        if (op.type === 'changeTrust') {
+          const c = op as Operation.ChangeTrust;
+          // c.line is an Asset for ordinary trustlines, or a LiquidityPoolAsset
+          // (no code/issuer — just pool parameters) for pool-share trustlines.
+          const asset = c.line instanceof Asset
+            ? (c.line.isNative() ? 'XLM' : c.line.getCode())
+            : 'liquidity pool shares';
+          return `Add trustline: ${asset}`;
+        }
+        return op.type;
+      });
 
     return { lines: ops, feeXlm };
   } catch {
