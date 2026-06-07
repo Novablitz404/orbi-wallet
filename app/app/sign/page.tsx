@@ -15,6 +15,13 @@ interface SignRequest {
   origin: string;
 }
 
+// Whole numbers show with no decimals, fractional amounts with exactly 2 —
+// classic Stellar amounts carry up to 7 decimal places, which reads as noise.
+function formatAmount(amount: string): string {
+  const n = parseFloat(amount);
+  return Number.isInteger(n) ? n.toString() : n.toFixed(2);
+}
+
 // Summarise what a G wallet transaction is doing (for the review UI).
 function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: string[]; feeXlm: string | null } {
   try {
@@ -30,7 +37,7 @@ function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: s
       if (op.type === 'payment') {
         const p = op as Operation.Payment;
         const asset = p.asset.isNative() ? 'XLM' : p.asset.code;
-        return `Send ${p.amount} ${asset} to ${p.destination.slice(0, 6)}…${p.destination.slice(-4)}`;
+        return `Send ${formatAmount(p.amount)} ${asset} to ${p.destination.slice(0, 6)}…${p.destination.slice(-4)}`;
       }
       if (op.type === 'pathPaymentStrictSend' || op.type === 'pathPaymentStrictReceive') {
         return 'Swap';

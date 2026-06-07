@@ -83,6 +83,10 @@ export default function DashboardPage() {
   const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
   const [selectedToken, setSelectedToken] = useState<SendToken>(XLM_SEND_TOKEN);
   const [tokenSelectorOpen, setTokenSelectorOpen] = useState(false);
+  // Prefetched account (sequence number), kicked off when entering the send
+  // preview so Confirm can build the XDR and open the approval popup with no
+  // visible delay — see handlePreview/handleConfirm.
+  const sendAccountRef = useRef<Promise<Account> | null>(null);
 
   // Toast notification for tx confirmation
   type Toast = { type: 'pending' | 'success' | 'error'; message: string; txHash?: string };
@@ -266,10 +270,21 @@ export default function DashboardPage() {
     return tokens;
   }
 
+  async function fetchSendAccount(addr: string): Promise<Account> {
+    const accountRes = await fetch(`${HORIZON_URL}/accounts/${addr}`);
+    if (!accountRes.ok) throw new Error('Account not found on Stellar — deposit 1 XLM first');
+    const accountData = await accountRes.json() as { sequence: string };
+    return new Account(addr, accountData.sequence);
+  }
+
   function handlePreview() {
     if (!walletAddress || !sendTo.trim() || !sendAmount) return;
     setSendError('');
     setPanelStep('send-preview');
+    // Kick off the sequence-number fetch now, while the user reviews the preview,
+    // so Confirm can build the XDR and open the approval popup immediately —
+    // no visible gap between the click and the "Approve Transaction" screen.
+    sendAccountRef.current = fetchSendAccount(walletAddress);
   }
 
   // Builds the payment XDR, has the user approve it with their passkey via the
@@ -280,10 +295,7 @@ export default function DashboardPage() {
 
     setSending(true);
     try {
-      const accountRes = await fetch(`${HORIZON_URL}/accounts/${walletAddress}`);
-      if (!accountRes.ok) throw new Error('Account not found on Stellar — deposit 1 XLM first');
-      const accountData = await accountRes.json() as { sequence: string };
-      const account = new Account(walletAddress, accountData.sequence);
+      const account = await (sendAccountRef.current ?? fetchSendAccount(walletAddress));
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -300,6 +312,12 @@ export default function DashboardPage() {
 
       const { signedXdr } = await orbi.signTransaction({ xdr: tx.toXDR(), walletAddress });
 
+      // Passkey approved — return to the dashboard right away rather than
+      // making the user wait through the Horizon submission round-trip with
+      // the send sidebar still open.
+      setPanelOpen(false);
+      sendAccountRef.current = null;
+
       const submitRes = await fetch(`${HORIZON_URL}/transactions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -310,7 +328,6 @@ export default function DashboardPage() {
         throw new Error(JSON.stringify(submitData.extras?.result_codes ?? submitData.title ?? 'Submit failed'));
       }
 
-      setPanelOpen(false);
       setTransactions(null); // refetch activity next time it's viewed, so the new tx shows up
       setToast({ type: 'success', message: 'Sent!', txHash: submitData.hash });
     } catch (e: unknown) {
