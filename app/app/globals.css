@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Space Grotesk for headings/balances/display text, JetBrains Mono for
+   addresses/hashes/amounts — variables come from next/font in layout.tsx. */
+@theme inline {
+  --font-display: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
 :root {
   --background: #020817;
   --foreground: #f8fafc;
