@@ -61,7 +61,7 @@ The connected wallet is cached in `localStorage`, so later `connect()` calls res
 Connects the user's wallet. Returns a cached session instantly if one exists; otherwise opens the connect popup and resolves once the user approves.
 
 ```ts
-const { walletAddress, credentialId, passkeyId, email } = await orbi.connect();
+const { walletAddress, credentialId, passkeyId } = await orbi.connect();
 ```
 
 ### `signTransaction({ xdr, walletAddress? }): Promise<SignResult>`

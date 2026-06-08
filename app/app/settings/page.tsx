@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getConnections, removeConnection, type StoredConnection } from '../../lib/storage';
-import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import BackButton from '../../components/BackButton';
 
@@ -28,12 +27,6 @@ export default function SettingsPage() {
     setConnections(prev => prev.filter(c => c.origin !== origin));
   }
 
-  async function disconnect() {
-    await fullWalletSignOut();
-    orbi.disconnect();
-    router.replace('/');
-  }
-
   if (!walletAddress) return null;
 
   return (
@@ -47,17 +40,6 @@ export default function SettingsPage() {
       <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-4 mb-4">
         <p className="text-slate-400 text-xs mb-1">Your wallet</p>
         <p className="text-white font-mono text-xs break-all">{walletAddress}</p>
-      </div>
-
-      {/* Actions */}
-      <div className="rounded-2xl bg-slate-800/50 border border-slate-700 divide-y divide-slate-700/50 mb-4">
-        <button
-          onClick={disconnect}
-          className="w-full flex items-center justify-between p-4 hover:bg-slate-700/30 transition-colors text-left"
-        >
-          <p className="text-red-400 text-sm font-medium">Disconnect</p>
-          <span className="text-slate-500">›</span>
-        </button>
       </div>
 
       {/* Connected dApps */}

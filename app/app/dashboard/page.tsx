@@ -126,6 +126,13 @@ export default function DashboardPage() {
   const [addTokenStep, setAddTokenStep] = useState<'form' | 'preview'>('form');
   const [addTokenCode, setAddTokenCode] = useState('');
   const [addTokenIssuer, setAddTokenIssuer] = useState('');
+  // Tracks which field's current value came from autofill (vs. the user
+  // typing it directly) — so a lookup never clobbers something the user
+  // entered themselves, in either direction.
+  const [addTokenCodeAuto, setAddTokenCodeAuto] = useState(false);
+  const [addTokenIssuerAuto, setAddTokenIssuerAuto] = useState(false);
+  const [addTokenLookingUp, setAddTokenLookingUp] = useState<'code' | 'issuer' | null>(null);
+  const addTokenLookupSeq = useRef(0);
   const [addTokenError, setAddTokenError] = useState('');
   const [addingToken, setAddingToken] = useState(false);
   const addTokenAccountRef = useRef<Promise<Account> | null>(null);
@@ -377,6 +384,8 @@ export default function DashboardPage() {
   function openAddToken() {
     setAddTokenStep('form');
     setAddTokenCode(''); setAddTokenIssuer(''); setAddTokenError('');
+    setAddTokenCodeAuto(false); setAddTokenIssuerAuto(false); setAddTokenLookingUp(null);
+    addTokenLookupSeq.current++;
     setAddTokenOpen(true);
   }
 
@@ -540,6 +549,70 @@ export default function DashboardPage() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [swapFromToken, swapToToken, swapFromAmount]);
+
+  // Add-token "type either, get the other" autofill. Prefers Orbi's curated
+  // issuer when the code matches a known asset (a verified source beats a
+  // guess); otherwise asks Horizon which issuer of that code has the most
+  // authorized trustlines — the closest available proxy for "the real one"
+  // without a directory service. Either way the user still sees and can edit
+  // the full issuer before confirming, so a wrong guess costs nothing.
+  useEffect(() => {
+    if (!addTokenOpen || addTokenStep !== 'form') return;
+    const code = addTokenCode.trim().toUpperCase();
+    if (!code || !/^[A-Z0-9]{1,12}$/.test(code)) return;
+    if (addTokenIssuer.trim() && !addTokenIssuerAuto) return;
+    // Curated matches are filled in synchronously from the input's onChange
+    // (a verified issuer beats a popularity guess) — skip the round-trip.
+    if (STELLAR_TOKENS.some(t => t.code.toUpperCase() === code)) return;
+
+    const seq = ++addTokenLookupSeq.current;
+    const t = setTimeout(() => {
+      setAddTokenLookingUp('issuer');
+      fetch(`${HORIZON_URL}/assets?asset_code=${encodeURIComponent(code)}&order=desc&limit=200`)
+        .then(res => res.ok ? res.json() : null)
+        .then((data: { _embedded?: { records?: Array<{ asset_issuer: string; accounts: { authorized: number } }> } } | null) => {
+          if (addTokenLookupSeq.current !== seq) return;
+          const records = data?._embedded?.records ?? [];
+          if (records.length === 0) return;
+          const best = records.reduce((a, b) => (b.accounts.authorized > a.accounts.authorized ? b : a));
+          setAddTokenIssuer(best.asset_issuer);
+          setAddTokenIssuerAuto(true);
+        })
+        .catch(() => { /* best-effort — leave the field for manual entry */ })
+        .finally(() => { if (addTokenLookupSeq.current === seq) setAddTokenLookingUp(null); });
+    }, 450);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTokenCode, addTokenOpen, addTokenStep]);
+
+  useEffect(() => {
+    if (!addTokenOpen || addTokenStep !== 'form') return;
+    const issuer = addTokenIssuer.trim();
+    if (!StrKey.isValidEd25519PublicKey(issuer)) return;
+    if (addTokenCode.trim() && !addTokenCodeAuto) return;
+    // Curated matches are filled in synchronously from the input's onChange
+    // (a verified code beats a popularity guess) — skip the round-trip.
+    if (STELLAR_TOKENS.some(t => t.issuer === issuer)) return;
+
+    const seq = ++addTokenLookupSeq.current;
+    const t = setTimeout(() => {
+      setAddTokenLookingUp('code');
+      fetch(`${HORIZON_URL}/assets?asset_issuer=${encodeURIComponent(issuer)}&limit=200`)
+        .then(res => res.ok ? res.json() : null)
+        .then((data: { _embedded?: { records?: Array<{ asset_code: string; accounts: { authorized: number } }> } } | null) => {
+          if (addTokenLookupSeq.current !== seq) return;
+          const records = data?._embedded?.records ?? [];
+          if (records.length === 0) return;
+          const best = records.reduce((a, b) => (b.accounts.authorized > a.accounts.authorized ? b : a));
+          setAddTokenCode(best.asset_code);
+          setAddTokenCodeAuto(true);
+        })
+        .catch(() => { /* best-effort — leave the field for manual entry */ })
+        .finally(() => { if (addTokenLookupSeq.current === seq) setAddTokenLookingUp(null); });
+    }, 450);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTokenIssuer, addTokenOpen, addTokenStep]);
 
   // Stellar enforces these shapes at the protocol level — checking here, before
   // the passkey popup, surfaces a fixable mistake instead of a failed submission
@@ -1849,12 +1922,32 @@ export default function DashboardPage() {
               <p className="text-slate-400 text-sm">
                 Add a trustline to any Stellar asset by its code and issuer address — it&apos;ll then show up in your token list and become sendable. This locks {TRUSTLINE_RESERVE_XLM} XLM as a reserve on your account.
               </p>
+              <p className="text-slate-500 text-xs -mt-2">
+                Enter either field and we&apos;ll try to fill in the other — always double-check the issuer address before confirming.
+              </p>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-slate-500 text-xs">Asset code</label>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-slate-500 text-xs">Asset code</label>
+                  {addTokenLookingUp === 'code' && (
+                    <svg className="animate-spin w-3 h-3 text-slate-600" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                  )}
+                </div>
                 <input
                   value={addTokenCode}
-                  onChange={e => setAddTokenCode(e.target.value)}
+                  onChange={e => {
+                    const value = e.target.value;
+                    setAddTokenCode(value);
+                    setAddTokenCodeAuto(false);
+                    const code = value.trim().toUpperCase();
+                    if (code && (!addTokenIssuer.trim() || addTokenIssuerAuto)) {
+                      const curated = STELLAR_TOKENS.find(t => t.code.toUpperCase() === code);
+                      if (curated) { setAddTokenIssuer(curated.issuer); setAddTokenIssuerAuto(true); }
+                    }
+                  }}
                   placeholder="e.g. USDC"
                   maxLength={12}
                   className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white text-sm outline-none placeholder-slate-600 font-mono focus:border-slate-500 transition-colors"
@@ -1862,10 +1955,27 @@ export default function DashboardPage() {
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-slate-500 text-xs">Issuer address</label>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-slate-500 text-xs">Issuer address</label>
+                  {addTokenLookingUp === 'issuer' && (
+                    <svg className="animate-spin w-3 h-3 text-slate-600" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                  )}
+                </div>
                 <input
                   value={addTokenIssuer}
-                  onChange={e => setAddTokenIssuer(e.target.value)}
+                  onChange={e => {
+                    const value = e.target.value;
+                    setAddTokenIssuer(value);
+                    setAddTokenIssuerAuto(false);
+                    const issuer = value.trim();
+                    if (issuer && (!addTokenCode.trim() || addTokenCodeAuto)) {
+                      const curated = STELLAR_TOKENS.find(t => t.issuer === issuer);
+                      if (curated) { setAddTokenCode(curated.code); setAddTokenCodeAuto(true); }
+                    }
+                  }}
                   placeholder="G..."
                   className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white text-sm outline-none placeholder-slate-600 font-mono focus:border-slate-500 transition-colors"
                 />
