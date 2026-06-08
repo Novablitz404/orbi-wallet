@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
-import { Networks, Asset, TransactionBuilder, Operation, Account, BASE_FEE } from '@stellar/stellar-sdk';
+import { Networks, Asset, TransactionBuilder, Operation, Account, Memo, StrKey, BASE_FEE } from '@stellar/stellar-sdk';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, TOKEN_PRICE_IDS, TREASURY_ADDRESS } from '../../lib/tokens';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
@@ -31,6 +31,7 @@ type PanelStep = 'send-form' | 'send-preview' | 'receive' | 'swap-form' | 'swap-
 interface TxRecord {
   id: string;
   direction: 'outgoing' | 'incoming';
+  isCreateAccount: boolean;
   assetCode?: string;
   amount?: string;
   to?: string;
@@ -93,6 +94,12 @@ export default function DashboardPage() {
   const [panelTab, setPanelTab] = useState<'send' | 'receive' | 'swap'>('send');
   const [sendTo, setSendTo] = useState('');
   const [sendAmount, setSendAmount] = useState('');
+  // 'none' keeps the memo field collapsed for the common case — most sends
+  // don't need one, but destinations like exchanges often require a specific
+  // type (text vs numeric ID) to route the deposit, and getting it wrong can
+  // permanently strand the funds.
+  const [sendMemoType, setSendMemoType] = useState<'none' | 'text' | 'id'>('none');
+  const [sendMemo, setSendMemo] = useState('');
   const [sendError, setSendError] = useState('');
   const [sending, setSending] = useState(false);
   const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
@@ -100,12 +107,28 @@ export default function DashboardPage() {
   // by a live Horizon read — drives the "Syncing…" hint so a stale figure is
   // never presented as gospel (see refreshBalances).
   const [balancesStale, setBalancesStale] = useState(false);
+  // Trustlines the account holds outside Orbi's curated list — discovered live
+  // from the account's own balance record (see refreshBalances), so "custom
+  // token support" needs no separate registry: the chain is the source of truth.
+  const [customTokens, setCustomTokens] = useState<DisplayToken[]>([]);
   const [selectedToken, setSelectedToken] = useState<SendToken>(XLM_SEND_TOKEN);
   const [tokenSelectorOpen, setTokenSelectorOpen] = useState(false);
   // Prefetched account (sequence number), kicked off when entering the send
   // preview so Confirm can build the XDR and open the approval popup with no
   // visible delay — see handlePreview/handleConfirm.
   const sendAccountRef = useRef<Promise<Account> | null>(null);
+
+  // "Add token" slide-over — establishes a trustline (changeTrust) to any
+  // classic Stellar asset by code + issuer, the same build/sign/submit
+  // pipeline as a send. Once it lands, the new balance (even at zero) shows
+  // up automatically via refreshBalances' live discovery.
+  const [addTokenOpen, setAddTokenOpen] = useState(false);
+  const [addTokenStep, setAddTokenStep] = useState<'form' | 'preview'>('form');
+  const [addTokenCode, setAddTokenCode] = useState('');
+  const [addTokenIssuer, setAddTokenIssuer] = useState('');
+  const [addTokenError, setAddTokenError] = useState('');
+  const [addingToken, setAddingToken] = useState(false);
+  const addTokenAccountRef = useRef<Promise<Account> | null>(null);
 
   // Swap panel — quotes come live from Horizon's path-finding (no fixed pair
   // list, since which pairs actually have liquidity varies by network/time —
@@ -161,18 +184,34 @@ export default function DashboardPage() {
         const native = balances.find(b => b.asset_type === 'native');
         const xlm = native?.balance ?? '0.0000000';
 
+        // Every credit-asset trustline the account holds gets a balance entry
+        // here — classic Stellar assets always carry exactly 7 decimals, so
+        // this works uniformly for curated tokens *and* anything the user (or
+        // another app) added a trustline to. Ones outside the curated list are
+        // collected separately as `custom` so the token list can display them
+        // without Orbi needing to know about them in advance — the chain is
+        // the registry.
         const map: Record<string, string> = {};
-        for (const token of STELLAR_TOKENS) {
-          const trustline = balances.find(b => b.asset_code === token.code && b.asset_issuer === token.issuer);
-          if (trustline) map[token.sacId] = String(Math.round(parseFloat(trustline.balance) * 10 ** token.decimals));
+        const custom: DisplayToken[] = [];
+        for (const b of balances) {
+          if (b.asset_type === 'native' || !b.asset_code || !b.asset_issuer) continue;
+          const sacId = new Asset(b.asset_code, b.asset_issuer).contractId(NETWORK_PASSPHRASE);
+          map[sacId] = String(Math.round(parseFloat(b.balance) * 1e7));
+          if (!STELLAR_TOKENS.some(t => t.sacId === sacId)) {
+            custom.push({
+              code: b.asset_code, name: b.asset_code, sacId, decimals: 7,
+              iconSrc: stellarExpertIcon(b.asset_code, b.asset_issuer), issuer: b.asset_issuer,
+            });
+          }
         }
 
         // Live data always wins — it overwrites both on-screen state and the
         // cache, so a cached figure can never linger past its next refresh.
         setXlmBalance(xlm);
         setTokenBalances(map);
+        setCustomTokens(custom);
         setBalancesStale(false);
-        saveCachedBalances(addr, xlm, map);
+        saveCachedBalances(addr, xlm, map, custom.map(({ code, sacId, issuer }) => ({ code, sacId, issuer: issuer! })));
       })
       // A failed refresh shouldn't blank out a balance we already know (from
       // cache or an earlier load) — "stale" beats "wrong". Only fall back to
@@ -211,6 +250,7 @@ export default function DashboardPage() {
         return {
           id: r.id,
           direction: to === walletAddress ? 'incoming' : 'outgoing',
+          isCreateAccount,
           assetCode: (isCreateAccount || r.asset_type === 'native') ? 'XLM' : r.asset_code,
           amount: amount ? String(Math.round(parseFloat(amount) * 1e7)) : undefined,
           to,
@@ -245,6 +285,12 @@ export default function DashboardPage() {
     if (cached) {
       setXlmBalance(cached.xlm);
       setTokenBalances(cached.tokens);
+      if (cached.customAssets?.length) {
+        setCustomTokens(cached.customAssets.map(a => ({
+          code: a.code, name: a.code, sacId: a.sacId, decimals: 7,
+          iconSrc: stellarExpertIcon(a.code, a.issuer), issuer: a.issuer,
+        })));
+      }
       setBalancesStale(true);
     }
 
@@ -319,12 +365,19 @@ export default function DashboardPage() {
     setPanelTab(tab);
     setPanelStep(tab === 'send' ? 'send-form' : tab === 'swap' ? 'swap-form' : 'receive');
     setSendTo(''); setSendAmount(''); setSendError('');
+    setSendMemoType('none'); setSendMemo('');
     setSelectedToken(XLM_SEND_TOKEN);
     setTokenSelectorOpen(false);
     setSwapFromToken(XLM_SEND_TOKEN); setSwapToToken(null);
     setSwapFromAmount(''); resetSwapQuote();
     setSwapTokenSelector(null);
     setPanelOpen(true);
+  }
+
+  function openAddToken() {
+    setAddTokenStep('form');
+    setAddTokenCode(''); setAddTokenIssuer(''); setAddTokenError('');
+    setAddTokenOpen(true);
   }
 
   // A token's available balance in human units
@@ -374,12 +427,14 @@ export default function DashboardPage() {
     setSendAmount((maxStroops / 1e7).toFixed(7).replace(/0+$/, '').replace(/\.$/, ''));
   }
 
-  // Curated default tokens, with whatever balance the account's trustlines show.
+  // Curated default tokens plus any custom trustlines the account holds, with
+  // whatever balance the account's trustlines show.
   function getDisplayTokens(): DisplayToken[] {
-    return STELLAR_TOKENS.map(t => ({
+    const curated = STELLAR_TOKENS.map(t => ({
       code: t.code, name: t.name, sacId: t.sacId, decimals: t.decimals,
       iconSrc: stellarExpertIcon(t.code, t.issuer), issuer: t.issuer,
     }));
+    return [...curated, ...customTokens];
   }
 
   // All tokens with a non-zero balance, for the send selector
@@ -486,8 +541,39 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [swapFromToken, swapToToken, swapFromAmount]);
 
+  // Stellar enforces these shapes at the protocol level — checking here, before
+  // the passkey popup, surfaces a fixable mistake instead of a failed submission
+  // (or worse: a memo silently dropped because it didn't encode as intended).
+  function memoValidationError(): string | null {
+    if (sendMemoType === 'none') return null;
+    const trimmed = sendMemo.trim();
+    if (!trimmed) return null; // field shown but empty — sent with no memo
+    if (sendMemoType === 'id') {
+      if (!/^\d+$/.test(trimmed) || BigInt(trimmed) > 0xffffffffffffffffn) {
+        return 'Memo ID must be a whole number (0 to 2^64-1)';
+      }
+      return null;
+    }
+    if (new TextEncoder().encode(trimmed).length > 28) {
+      return 'Memo text is too long — max 28 bytes';
+    }
+    return null;
+  }
+
+  // Returns null when no memo should be attached — either the section is
+  // collapsed, or it's open but left blank (don't force an empty memo onto
+  // the transaction just because the user glanced at the field).
+  function buildMemo(): Memo | null {
+    if (sendMemoType === 'none') return null;
+    const trimmed = sendMemo.trim();
+    if (!trimmed) return null;
+    return sendMemoType === 'id' ? Memo.id(trimmed) : Memo.text(trimmed);
+  }
+
   function handlePreview() {
     if (!walletAddress || !sendTo.trim() || !sendAmount) return;
+    const memoErr = memoValidationError();
+    if (memoErr) { setSendError(memoErr); return; }
     setSendError('');
     setPanelStep('send-preview');
     // Kick off the sequence-number fetch now, while the user reviews the preview,
@@ -505,7 +591,7 @@ export default function DashboardPage() {
     setSending(true);
     try {
       const account = await (sendAccountRef.current ?? fetchSendAccount(walletAddress));
-      const tx = new TransactionBuilder(account, {
+      const builder = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
       })
@@ -515,9 +601,12 @@ export default function DashboardPage() {
             ? Asset.native()
             : new Asset(selectedToken.code, selectedToken.issuer),
           amount: sendAmount,
-        }))
-        .setTimeout(30)
-        .build();
+        }));
+
+      const memo = buildMemo();
+      if (memo) builder.addMemo(memo);
+
+      const tx = builder.setTimeout(30).build();
 
       const { signedXdr } = await orbi.signTransaction({ xdr: tx.toXDR(), walletAddress });
 
@@ -621,6 +710,71 @@ export default function DashboardPage() {
     }
   }
 
+  // Catches the fixable mistakes (malformed code/address, a trustline that
+  // already exists) before the passkey popup — same rationale as memoValidationError.
+  function addTokenValidationError(): string | null {
+    const code = addTokenCode.trim();
+    const issuer = addTokenIssuer.trim();
+    if (!code || !issuer) return null;
+    if (!/^[A-Za-z0-9]{1,12}$/.test(code)) return 'Asset code must be 1-12 letters or numbers';
+    if (!StrKey.isValidEd25519PublicKey(issuer)) return 'Issuer must be a valid Stellar address (G...)';
+    const sacId = new Asset(code, issuer).contractId(NETWORK_PASSPHRASE);
+    if (tokenBalances[sacId] !== undefined) return 'You already hold a trustline to this asset';
+    return null;
+  }
+
+  function handleAddTokenPreview() {
+    if (!walletAddress || !addTokenCode.trim() || !addTokenIssuer.trim()) return;
+    const err = addTokenValidationError();
+    if (err) { setAddTokenError(err); return; }
+    setAddTokenError('');
+    setAddTokenStep('preview');
+    addTokenAccountRef.current = fetchSendAccount(walletAddress);
+  }
+
+  // Establishes a trustline via changeTrust — the standard prerequisite for
+  // holding or receiving any classic Stellar asset. Same build/sign/submit
+  // pipeline as a send: passkey-approved XDR straight to Horizon, no relay.
+  async function handleAddTokenConfirm() {
+    if (!walletAddress) return;
+    const code = addTokenCode.trim();
+    const issuer = addTokenIssuer.trim();
+
+    setAddingToken(true);
+    try {
+      const account = await (addTokenAccountRef.current ?? fetchSendAccount(walletAddress));
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(Operation.changeTrust({ asset: new Asset(code, issuer) }))
+        .setTimeout(30)
+        .build();
+
+      const { signedXdr } = await orbi.signTransaction({ xdr: tx.toXDR(), walletAddress });
+
+      setAddTokenOpen(false);
+      addTokenAccountRef.current = null;
+
+      const submitRes = await fetch(`${HORIZON_URL}/transactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ tx: signedXdr }),
+      });
+      const submitData = await submitRes.json() as { hash?: string; extras?: { result_codes?: unknown }; title?: string };
+      if (!submitData.hash) {
+        throw new Error(JSON.stringify(submitData.extras?.result_codes ?? submitData.title ?? 'Submit failed'));
+      }
+
+      if (walletAddress) refreshBalances(walletAddress); // the new (zero-balance) trustline now shows up via live discovery
+      setToast({ type: 'success', title: 'Token added!', message: `Trustline to ${code} created — it'll appear in your token list.`, txHash: submitData.hash });
+    } catch (e: unknown) {
+      setToast({ type: 'error', title: 'Failed to add token', message: e instanceof Error ? e.message : 'Failed to create trustline' });
+    } finally {
+      setAddingToken(false);
+    }
+  }
+
   const xlmFloat = xlmBalance ? parseFloat(xlmBalance) : 0;
   const xlmUsd = xlmPrice != null ? xlmFloat * xlmPrice : null;
 
@@ -680,11 +834,11 @@ export default function DashboardPage() {
             <button onClick={() => openPanel('send')} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 text-sm transition-colors text-left">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>Send
             </button>
-            <button onClick={() => openPanel('swap')} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 text-sm transition-colors text-left">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4"/></svg>Swap
-            </button>
             <button onClick={() => openPanel('receive')} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 text-sm transition-colors text-left">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>Receive
+            </button>
+            <button onClick={() => openPanel('swap')} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 text-sm transition-colors text-left">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4"/></svg>Swap
             </button>
           </div>
         </div>
@@ -784,8 +938,8 @@ export default function DashboardPage() {
 
           <div className="md:hidden flex gap-3 mb-6">
             <button onClick={() => openPanel('send')} className="flex-1 py-3 rounded-2xl bg-white text-slate-900 font-semibold text-sm">Send</button>
-            <button onClick={() => openPanel('swap')} className="flex-1 py-3 rounded-2xl bg-slate-800 border border-slate-700 text-white font-semibold text-sm">Swap</button>
             <button onClick={() => openPanel('receive')} className="flex-1 py-3 rounded-2xl bg-slate-800 border border-slate-700 text-white font-semibold text-sm">Receive</button>
+            <button onClick={() => openPanel('swap')} className="flex-1 py-3 rounded-2xl bg-slate-800 border border-slate-700 text-white font-semibold text-sm">Swap</button>
           </div>
 
           {activeNav === 'assets' && (
@@ -801,7 +955,16 @@ export default function DashboardPage() {
                     <span className="text-xs text-amber-400/80 animate-pulse">Syncing…</span>
                   )}
                 </div>
-                <span className="text-xs text-slate-500 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/50">Stellar Testnet</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={openAddToken}
+                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg>
+                    Add token
+                  </button>
+                  <span className="text-xs text-slate-500 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/50">Stellar Testnet</span>
+                </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 px-4 pb-2 border-b border-slate-800 text-slate-500 text-xs font-medium">
                 <span>Asset</span><span className="text-right">Balance</span>
@@ -925,24 +1088,37 @@ export default function DashboardPage() {
                   const humanAmount = tx.amount && tx.assetCode
                     ? `${fmt(Number(BigInt(tx.amount)) / 1e7)} ${tx.assetCode}`
                     : null;
-                  const counterparty = isIncoming ? tx.from : tx.to;
                   const label = isIncoming ? 'Received' : 'Sent';
+                  const title = tx.isCreateAccount ? 'Create Account' : (tx.assetCode ?? 'Transaction');
                   const date = new Date(tx.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
                   return (
                     <div key={tx.id} onClick={() => openTxDetail(tx)} className="flex items-center gap-4 px-2 py-3 rounded-xl hover:bg-slate-800/20 transition-colors cursor-pointer">
-                      <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${isIncoming ? 'bg-green-500/10' : 'bg-slate-800'}`}>
-                        <svg className={`w-4 h-4 ${isIncoming ? 'text-green-400' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          {isIncoming
-                            ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                            : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />}
-                        </svg>
+                      <div className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center shrink-0 ${tx.isCreateAccount ? 'bg-slate-800' : 'bg-white'}`}>
+                        {tx.isCreateAccount ? (
+                          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                          </svg>
+                        ) : (
+                          <img
+                            src={tx.assetCode === 'XLM' ? XLM_ICON : tokenLetterAvatar(tx.assetCode ?? '?')}
+                            alt={tx.assetCode ?? 'asset'}
+                            className="w-full h-full object-cover"
+                            onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(tx.assetCode ?? '?'); }}
+                          />
+                        )}
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <p className="text-white text-sm font-medium">{label}</p>
-                        <p className="text-slate-500 text-xs truncate font-mono">
-                          {counterparty ? truncate(counterparty) : '—'}
+                        <p className="text-white text-sm font-medium truncate">{title}</p>
+                        <p className="text-slate-500 text-xs flex items-center gap-1">
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <circle cx="12" cy="12" r="9" />
+                            {isIncoming
+                              ? <path strokeLinecap="round" strokeLinejoin="round" d="M12 7.5v9m0 0l-3.5-3.5M12 16.5l3.5-3.5" />
+                              : <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5v-9m0 0L8.5 11m3.5-3.5L15.5 11" />}
+                          </svg>
+                          {label}
                         </p>
                       </div>
 
@@ -1036,8 +1212,8 @@ export default function DashboardPage() {
               </button>
               <div className="flex gap-1 bg-slate-800 rounded-xl p-1">
                 <button onClick={() => { setPanelTab('send'); setPanelStep('send-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'send' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Send</button>
-                <button onClick={() => { setPanelTab('swap'); setPanelStep('swap-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'swap' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Swap</button>
                 <button onClick={() => { setPanelTab('receive'); setPanelStep('receive'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'receive' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Receive</button>
+                <button onClick={() => { setPanelTab('swap'); setPanelStep('swap-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'swap' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Swap</button>
               </div>
               <div className="w-5" />
             </div>
@@ -1116,6 +1292,45 @@ export default function DashboardPage() {
                 />
               </div>
 
+              {/* Memo — collapsed by default; some destinations (exchanges,
+                  custodial platforms) require one to route the deposit, and
+                  the wrong type/value can permanently strand funds. */}
+              {sendMemoType === 'none' ? (
+                <button
+                  onClick={() => setSendMemoType('text')}
+                  className="flex items-center gap-2 text-slate-500 hover:text-slate-300 text-xs transition-colors self-start"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg>
+                  Add memo <span className="text-slate-600">— some exchanges require one</span>
+                </button>
+              ) : (
+                <div className="flex flex-col gap-2 p-3 rounded-xl bg-slate-800/50 border border-slate-700/50">
+                  <div className="flex items-center justify-between">
+                    <div className="flex gap-1 bg-slate-900 rounded-lg p-0.5">
+                      <button
+                        onClick={() => setSendMemoType('text')}
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${sendMemoType === 'text' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}
+                      >Text</button>
+                      <button
+                        onClick={() => setSendMemoType('id')}
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${sendMemoType === 'id' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}
+                      >ID</button>
+                    </div>
+                    <button
+                      onClick={() => { setSendMemoType('none'); setSendMemo(''); setSendError(''); }}
+                      className="text-slate-500 hover:text-slate-300 text-xs transition-colors"
+                    >Remove</button>
+                  </div>
+                  <input
+                    value={sendMemo}
+                    onChange={e => setSendMemo(e.target.value)}
+                    placeholder={sendMemoType === 'id' ? 'Numeric memo ID' : 'Memo text (max 28 bytes)'}
+                    inputMode={sendMemoType === 'id' ? 'numeric' : 'text'}
+                    className="bg-transparent text-white text-sm outline-none placeholder-slate-600 font-mono"
+                  />
+                </div>
+              )}
+
               {sendError && <p className="text-red-400 text-xs">{sendError}</p>}
             </div>
 
@@ -1172,6 +1387,12 @@ export default function DashboardPage() {
 
               {/* Details */}
               <div className="flex flex-col gap-3 border-t border-slate-800 pt-4">
+                {sendMemoType !== 'none' && sendMemo.trim() && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-400">Memo ({sendMemoType === 'id' ? 'ID' : 'Text'})</span>
+                    <span className="text-white font-mono">{sendMemo.trim()}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Wallet used</span>
                   <span className="text-white font-mono">{truncate(walletAddress)}</span>
@@ -1215,8 +1436,8 @@ export default function DashboardPage() {
               </button>
               <div className="flex gap-1 bg-slate-800 rounded-xl p-1">
                 <button onClick={() => { setPanelTab('send'); setPanelStep('send-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'send' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Send</button>
-                <button onClick={() => { setPanelTab('swap'); setPanelStep('swap-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'swap' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Swap</button>
                 <button onClick={() => { setPanelTab('receive'); setPanelStep('receive'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'receive' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Receive</button>
+                <button onClick={() => { setPanelTab('swap'); setPanelStep('swap-form'); }} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${panelTab === 'swap' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}>Swap</button>
               </div>
               <div className="w-5" />
             </div>
@@ -1607,6 +1828,127 @@ export default function DashboardPage() {
             </>
           );
         })()}
+      </div>
+
+      {/* ── Add token slide-over ── */}
+      {addTokenOpen && (
+        <div className="fixed inset-0 bg-black/40 z-40" onClick={() => !addingToken && setAddTokenOpen(false)} />
+      )}
+
+      <div className={`fixed top-0 right-0 h-full w-full md:w-96 bg-slate-900 border-l border-slate-700/50 z-50 flex flex-col shadow-2xl transition-transform duration-300 ease-out ${addTokenOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+        {addTokenOpen && addTokenStep === 'form' && (
+          <>
+            <div className="flex items-center gap-3 p-5 border-b border-slate-800">
+              <button onClick={() => setAddTokenOpen(false)} className="text-slate-400 hover:text-white transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+              <h2 className="text-white font-semibold">Add token</h2>
+            </div>
+
+            <div className="flex-1 p-5 flex flex-col gap-4 overflow-y-auto">
+              <p className="text-slate-400 text-sm">
+                Add a trustline to any Stellar asset by its code and issuer address — it&apos;ll then show up in your token list and become sendable. This locks {TRUSTLINE_RESERVE_XLM} XLM as a reserve on your account.
+              </p>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-slate-500 text-xs">Asset code</label>
+                <input
+                  value={addTokenCode}
+                  onChange={e => setAddTokenCode(e.target.value)}
+                  placeholder="e.g. USDC"
+                  maxLength={12}
+                  className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white text-sm outline-none placeholder-slate-600 font-mono focus:border-slate-500 transition-colors"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-slate-500 text-xs">Issuer address</label>
+                <input
+                  value={addTokenIssuer}
+                  onChange={e => setAddTokenIssuer(e.target.value)}
+                  placeholder="G..."
+                  className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white text-sm outline-none placeholder-slate-600 font-mono focus:border-slate-500 transition-colors"
+                />
+              </div>
+
+              {addTokenError && <p className="text-red-400 text-xs">{addTokenError}</p>}
+            </div>
+
+            <div className="p-5 border-t border-slate-800">
+              <button
+                onClick={handleAddTokenPreview}
+                disabled={!addTokenCode.trim() || !addTokenIssuer.trim()}
+                className="w-full py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-900 font-semibold flex items-center justify-center gap-2 transition-colors"
+              >
+                Preview <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+          </>
+        )}
+
+        {addTokenOpen && addTokenStep === 'preview' && (
+          <>
+            <div className="flex items-center gap-3 p-5 border-b border-slate-800">
+              <button onClick={() => setAddTokenStep('form')} disabled={addingToken} className="text-slate-400 hover:text-white disabled:opacity-40 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
+              </button>
+              <h2 className="text-white font-semibold">Add token</h2>
+            </div>
+
+            <div className="flex-1 p-5 flex flex-col gap-5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center">
+                  <img src={stellarExpertIcon(addTokenCode.trim(), addTokenIssuer.trim())} alt={addTokenCode.trim()} className="w-full h-full object-cover"
+                    onError={e => { (e.target as HTMLImageElement).src = tokenLetterAvatar(addTokenCode.trim()); }} />
+                </div>
+                <div>
+                  <p className="text-white font-medium">{addTokenCode.trim()}</p>
+                  <p className="text-slate-500 text-xs font-mono">{truncate(addTokenIssuer.trim())}</p>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 border-t border-slate-800 pt-4">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Wallet used</span>
+                  <span className="text-white font-mono">{walletAddress ? truncate(walletAddress) : '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Network fee</span>
+                  <span className="text-white">{SEND_FEE_XLM} XLM</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Reserve locked</span>
+                  <span className="text-white">{TRUSTLINE_RESERVE_XLM} XLM</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Network</span>
+                  <span className="text-white">Stellar Testnet</span>
+                </div>
+              </div>
+
+              <p className="text-slate-500 text-xs">
+                The reserve is locked by the network for as long as you hold this trustline — it isn&apos;t spent or sent anywhere, and is freed if you remove the trustline later.
+              </p>
+            </div>
+
+            <div className="p-5 border-t border-slate-800 flex gap-3">
+              <button onClick={() => setAddTokenStep('form')} disabled={addingToken} className="flex-1 py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-semibold transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleAddTokenConfirm} disabled={addingToken} className="flex-1 py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-semibold transition-colors flex items-center justify-center gap-2">
+                {addingToken ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                    Confirm in popup…
+                  </>
+                ) : 'Confirm'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Toast notification ── */}

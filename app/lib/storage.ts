@@ -69,9 +69,19 @@ export function removeConnection(walletAddress: string, origin: string): void {
 
 const BALANCES_KEY = 'orbi_balances';
 
+export interface CachedAsset {
+  code: string;
+  issuer: string;
+  sacId: string;
+}
+
 export interface CachedBalances {
   xlm: string;
   tokens: Record<string, string>;
+  // Trustlines outside Orbi's curated token list — cached too, so a custom
+  // token the user added shows up instantly on return visits instead of
+  // popping in once the live read identifies it (same fix as `tokens`).
+  customAssets?: CachedAsset[];
 }
 
 function loadAllCachedBalances(): Record<string, CachedBalances> {
@@ -84,8 +94,13 @@ export function loadCachedBalances(walletAddress: string): CachedBalances | null
   return loadAllCachedBalances()[walletAddress] ?? null;
 }
 
-export function saveCachedBalances(walletAddress: string, xlm: string, tokens: Record<string, string>): void {
+export function saveCachedBalances(
+  walletAddress: string,
+  xlm: string,
+  tokens: Record<string, string>,
+  customAssets?: CachedAsset[],
+): void {
   const all = loadAllCachedBalances();
-  all[walletAddress] = { xlm, tokens };
+  all[walletAddress] = { xlm, tokens, customAssets };
   localStorage.setItem(BALANCES_KEY, JSON.stringify(all));
 }
