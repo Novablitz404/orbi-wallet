@@ -10,6 +10,7 @@
  */
 
 import { Asset, Networks } from '@stellar/stellar-sdk';
+import { getNetworkPreference } from './storage';
 
 export interface StellarToken {
   code: string;
@@ -19,8 +20,7 @@ export interface StellarToken {
   decimals: number;
 }
 
-const NETWORK: 'mainnet' | 'testnet' =
-  process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
+const NETWORK: 'mainnet' | 'testnet' = getNetworkPreference();
 const PASSPHRASE = NETWORK === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 
 // XLM is native (no issuer) — use CoinMarketCap which has the proper Stellar logo

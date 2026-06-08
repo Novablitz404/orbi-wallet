@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances } from '../../lib/storage';
+import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances, getNetworkPreference, setNetworkPreference } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { Networks, Asset, TransactionBuilder, Operation, Account, Memo, StrKey, BASE_FEE } from '@stellar/stellar-sdk';
 import { OrbiClient } from '@orbi-wallet/sdk';
@@ -13,7 +13,8 @@ import 'react-loading-skeleton/dist/skeleton.css';
 const dicebearUrl = (seed: string, size: number) =>
   `https://api.dicebear.com/9.x/rings/svg?seed=${encodeURIComponent(seed)}&size=${size}`;
 
-const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? 'testnet') as 'testnet' | 'mainnet';
+const NETWORK = getNetworkPreference();
+const NETWORK_LABEL = NETWORK === 'mainnet' ? 'Stellar Mainnet' : 'Stellar Testnet';
 const orbi = new OrbiClient({ network: NETWORK });
 const NETWORK_PASSPHRASE = NETWORK === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 const HORIZON_URL = NETWORK === 'mainnet' ? 'https://horizon.stellar.org' : 'https://horizon-testnet.stellar.org';
@@ -218,7 +219,7 @@ export default function DashboardPage() {
         setTokenBalances(map);
         setCustomTokens(custom);
         setBalancesStale(false);
-        saveCachedBalances(addr, xlm, map, custom.map(({ code, sacId, issuer }) => ({ code, sacId, issuer: issuer! })));
+        saveCachedBalances(addr, NETWORK, xlm, map, custom.map(({ code, sacId, issuer }) => ({ code, sacId, issuer: issuer! })));
       })
       // A failed refresh shouldn't blank out a balance we already know (from
       // cache or an earlier load) — "stale" beats "wrong". Only fall back to
@@ -288,7 +289,7 @@ export default function DashboardPage() {
     // what gives returning users the same "instantly there" feel XLM has,
     // instead of every non-zero token row blinking out until the live read
     // lands. The live fetch below reconciles (and overwrites) it right away.
-    const cached = loadCachedBalances(addr);
+    const cached = loadCachedBalances(addr, NETWORK);
     if (cached) {
       setXlmBalance(cached.xlm);
       setTokenBalances(cached.tokens);
@@ -1036,7 +1037,16 @@ export default function DashboardPage() {
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg>
                     Add token
                   </button>
-                  <span className="text-xs text-slate-500 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/50">Stellar Testnet</span>
+                  <button
+                    onClick={() => {
+                      setNetworkPreference(NETWORK === 'mainnet' ? 'testnet' : 'mainnet');
+                      window.location.reload();
+                    }}
+                    title="Switch network — reloads the app"
+                    className="text-xs text-slate-500 hover:text-white px-3 py-1.5 rounded-lg border border-slate-700 hover:border-slate-500 bg-slate-800/50 transition-colors"
+                  >
+                    {NETWORK_LABEL}
+                  </button>
                 </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 px-4 pb-2 border-b border-slate-800 text-slate-500 text-xs font-medium">
@@ -1476,7 +1486,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Network</span>
-                  <span className="text-white">Stellar Testnet</span>
+                  <span className="text-white">{NETWORK_LABEL}</span>
                 </div>
               </div>
             </div>
@@ -1800,7 +1810,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Network</span>
-                  <span className="text-white">Stellar Testnet</span>
+                  <span className="text-white">{NETWORK_LABEL}</span>
                 </div>
               </div>
 
@@ -2032,7 +2042,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-400">Network</span>
-                  <span className="text-white">Stellar Testnet</span>
+                  <span className="text-white">{NETWORK_LABEL}</span>
                 </div>
               </div>
 

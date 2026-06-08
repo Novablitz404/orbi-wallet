@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { signInWithPRF } from '../../lib/prf-wallet';
-import { loadWallet, saveWallet, addConnection, type StoredWallet } from '../../lib/storage';
+import { loadWallet, saveWallet, addConnection, getNetworkPreference, type StoredWallet } from '../../lib/storage';
 
-const HORIZON_URL = process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet'
+const HORIZON_URL = getNetworkPreference() === 'mainnet'
   ? 'https://horizon.stellar.org'
   : 'https://horizon-testnet.stellar.org';
 

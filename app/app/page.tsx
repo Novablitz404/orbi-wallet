@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { OrbiClient } from '@orbi-wallet/sdk';
+import { getNetworkPreference } from '../lib/storage';
 
-const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? 'testnet') as 'testnet' | 'mainnet';
+const NETWORK = getNetworkPreference();
 const orbi = new OrbiClient({ network: NETWORK });
 
 export default function Home() {

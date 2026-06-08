@@ -1,3 +1,27 @@
+// ── network preference (testnet ↔ mainnet toggle) ──
+//
+// Persisted client-side so the user can switch networks without an env
+// rebuild. Falls back to the build-time env var (and 'testnet') when nothing
+// is stored yet, or when read during SSR (no localStorage).
+
+const NETWORK_KEY = 'orbi_network';
+
+export type StellarNetwork = 'testnet' | 'mainnet';
+
+function defaultNetwork(): StellarNetwork {
+  return process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
+}
+
+export function getNetworkPreference(): StellarNetwork {
+  if (typeof window === 'undefined') return defaultNetwork();
+  const stored = localStorage.getItem(NETWORK_KEY);
+  return stored === 'mainnet' || stored === 'testnet' ? stored : defaultNetwork();
+}
+
+export function setNetworkPreference(network: StellarNetwork): void {
+  localStorage.setItem(NETWORK_KEY, network);
+}
+
 const WALLET_KEY = 'orbi_wallet';
 
 export interface StoredWallet {
@@ -90,17 +114,26 @@ function loadAllCachedBalances(): Record<string, CachedBalances> {
   return raw ? JSON.parse(raw) : {};
 }
 
-export function loadCachedBalances(walletAddress: string): CachedBalances | null {
-  return loadAllCachedBalances()[walletAddress] ?? null;
+// A G-address is identical on testnet and mainnet but holds completely
+// different balances/trustlines on each — the cache key must include the
+// network or switching networks would paint one network's figures over
+// the other's on first load.
+function balancesCacheKey(walletAddress: string, network: StellarNetwork): string {
+  return `${walletAddress}:${network}`;
+}
+
+export function loadCachedBalances(walletAddress: string, network: StellarNetwork): CachedBalances | null {
+  return loadAllCachedBalances()[balancesCacheKey(walletAddress, network)] ?? null;
 }
 
 export function saveCachedBalances(
   walletAddress: string,
+  network: StellarNetwork,
   xlm: string,
   tokens: Record<string, string>,
   customAssets?: CachedAsset[],
 ): void {
   const all = loadAllCachedBalances();
-  all[walletAddress] = { xlm, tokens, customAssets };
+  all[balancesCacheKey(walletAddress, network)] = { xlm, tokens, customAssets };
   localStorage.setItem(BALANCES_KEY, JSON.stringify(all));
 }

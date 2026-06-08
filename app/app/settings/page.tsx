@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getConnections, removeConnection, type StoredConnection } from '../../lib/storage';
+import { getConnections, removeConnection, getNetworkPreference, type StoredConnection } from '../../lib/storage';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import BackButton from '../../components/BackButton';
 
-const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? 'testnet') as 'testnet' | 'mainnet';
+const NETWORK = getNetworkPreference();
+const NETWORK_LABEL = NETWORK === 'mainnet' ? 'Stellar Mainnet' : 'Stellar Testnet';
 const orbi = new OrbiClient({ network: NETWORK });
 
 export default function SettingsPage() {
@@ -77,7 +78,7 @@ export default function SettingsPage() {
       {/* Network */}
       <div className="flex justify-center pt-2">
         <span className="px-3 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-500 text-xs">
-          Stellar Testnet
+          {NETWORK_LABEL}
         </span>
       </div>
     </main>

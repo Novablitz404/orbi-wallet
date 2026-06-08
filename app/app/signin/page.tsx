@@ -3,10 +3,10 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import BackButton from '../../components/BackButton';
-import { saveWallet, loadWallet } from '../../lib/storage';
+import { saveWallet, loadWallet, getNetworkPreference } from '../../lib/storage';
 import { signInWithPRF } from '../../lib/prf-wallet';
 
-const HORIZON_URL = process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet'
+const HORIZON_URL = getNetworkPreference() === 'mainnet'
   ? 'https://horizon.stellar.org'
   : 'https://horizon-testnet.stellar.org';
 
