@@ -4,13 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "prebuild": "npm run build --prefix ../sdk",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
-    "@orbi-wallet/sdk": "*",
+    "@orbi-wallet/sdk": "^0.1.0",
     "@simplewebauthn/browser": "^13.3.0",
     "@stellar/stellar-sdk": "^15.1.0",
     "buffer": "^6.0.3",

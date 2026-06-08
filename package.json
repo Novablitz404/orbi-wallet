@@ -3,12 +3,10 @@
   "version": "0.0.1",
   "private": true,
   "workspaces": [
-    "app",
-    "sdk"
+    "app"
   ],
   "scripts": {
     "dev:app": "npm --workspace app run dev",
-    "build:app": "npm --workspace app run build",
-    "build:sdk": "npm --workspace sdk run build"
+    "build:app": "npm --workspace app run build"
   }
 }
