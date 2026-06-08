@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import BackButton from '../../components/BackButton';
 import { saveWallet, loadWallet, getNetworkPreference } from '../../lib/storage';
@@ -49,7 +50,7 @@ export default function SignInPage() {
       </div>
 
       <div className="flex flex-col items-center gap-3 mb-10">
-        <img src="/Orbi%20Icon.png" alt="Orbi" className="w-16 h-16 rounded-2xl" />
+        <Image src="/Orbi Icon.png" alt="Orbi" width={64} height={64} className="w-16 h-16 rounded-2xl" priority />
         <h1 className="text-2xl font-bold text-white">Welcome back</h1>
         <p className="text-slate-400 text-center text-sm max-w-xs">
           Use your passkey to sign in to your Orbi wallet.

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances, getNetworkPreference, setNetworkPreference } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
@@ -893,7 +894,7 @@ export default function DashboardPage() {
 
       {/* ── Sidebar ── */}
       <aside className="hidden md:flex flex-col w-56 border-r border-slate-800 px-4 py-6 shrink-0">
-        <img src="/Orbi%20logo%20-%20Landscape%20white.png" alt="Orbi" className="h-9 w-auto max-w-[140px] mb-8" />
+        <Image src="/Orbi logo - Landscape white.png" alt="Orbi" width={1862} height={647} className="h-9 w-auto max-w-[140px] mb-8" priority />
         <nav className="flex flex-col gap-1">
           {[
             { id: 'assets', label: 'Assets', icon: <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><circle cx="12" cy="12" r="9" strokeWidth={2}/><path strokeLinecap="round" strokeWidth={2} d="M12 6v6l4 2"/></svg> },
@@ -966,7 +967,7 @@ export default function DashboardPage() {
 
         {/* Mobile header */}
         <div className="md:hidden flex items-center justify-between px-4 pt-6 pb-4 border-b border-slate-800">
-          <img src="/Orbi%20logo%20-%20Landscape%20white.png" alt="Orbi" className="h-6 w-auto" />
+          <Image src="/Orbi logo - Landscape white.png" alt="Orbi" width={1862} height={647} className="h-6 w-auto" priority />
           <div className="relative" ref={mobileDropdownRef}>
             <button onClick={() => setDropdownOpen(o => !o)} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800/60 border border-slate-700/50 text-slate-300 text-sm hover:bg-slate-700/50 transition-colors">
               <img src={dicebearUrl(walletAddress, 22)} alt="avatar" className="w-5 h-5 rounded-full" />

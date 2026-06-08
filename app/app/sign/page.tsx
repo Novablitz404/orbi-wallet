@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Image from 'next/image';
 import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
 import { loadWallet } from '../../lib/storage';
 import { signTransactionWithPRF } from '../../lib/prf-wallet';
@@ -159,7 +160,7 @@ export default function SignPage() {
     <main className="flex flex-col items-center justify-center min-h-screen px-6 bg-[#020817]">
       <div className="w-full max-w-sm flex flex-col items-center gap-6">
 
-        <img src="/Orbi%20Icon.png" alt="Orbi" className="w-14 h-14 rounded-2xl" />
+        <Image src="/Orbi Icon.png" alt="Orbi" width={56} height={56} className="w-14 h-14 rounded-2xl" priority />
 
         {step === 'loading' && (
           <div className="animate-pulse text-slate-500 text-sm">Loading…</div>

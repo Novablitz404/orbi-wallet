@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import { getNetworkPreference } from '../lib/storage';
@@ -34,7 +35,7 @@ export default function Home() {
   return (
     <main className="flex flex-col items-center justify-center min-h-screen px-4 bg-[#020817]">
       <div className="flex flex-col items-center gap-3 mb-10">
-        <img src="/Orbi%20Icon.png" alt="Orbi" className="w-16 h-16 rounded-2xl" />
+        <Image src="/Orbi Icon.png" alt="Orbi" width={64} height={64} className="w-16 h-16 rounded-2xl" priority />
         <h1 className="text-2xl font-bold text-white">Orbi Wallet</h1>
         <p className="text-slate-400 text-center text-sm max-w-xs">
           Connect your wallet to view your balance, activity, and send funds.
