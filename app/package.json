@@ -12,6 +12,7 @@
     "@orbi-wallet/sdk": "^0.1.0",
     "@simplewebauthn/browser": "^13.3.0",
     "@stellar/stellar-sdk": "^15.1.0",
+    "@vercel/analytics": "^2.0.1",
     "buffer": "^6.0.3",
     "cbor-x": "^1.6.4",
     "next": "16.2.6",

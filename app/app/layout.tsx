@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Analytics } from "@vercel/analytics/next";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import BufferPolyfill from "../components/BufferPolyfill";
@@ -33,6 +34,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-[#020817]">
         <BufferPolyfill />
         {children}
+        <Analytics />
       </body>
     </html>
   );
