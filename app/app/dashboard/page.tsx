@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances, getNetworkPreference, setNetworkPreference } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
-import { Networks, Asset, TransactionBuilder, Operation, Account, Memo, StrKey, BASE_FEE } from '@stellar/stellar-sdk';
+import { Networks, Asset, TransactionBuilder, Operation, Account, Memo, StrKey, BASE_FEE } from '@stellar/stellar-base';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import { STELLAR_TOKENS, tokenLetterAvatar, XLM_ICON, stellarExpertIcon, TOKEN_PRICE_IDS, TREASURY_ADDRESS } from '../../lib/tokens';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
+import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-base';
 import { loadWallet } from '../../lib/storage';
 import { signTransactionWithPRF } from '../../lib/prf-wallet';
 import { TREASURY_ADDRESS } from '../../lib/tokens';

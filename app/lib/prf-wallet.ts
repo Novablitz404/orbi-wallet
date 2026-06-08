@@ -1,4 +1,4 @@
-import { Keypair, TransactionBuilder, Networks } from '@stellar/stellar-sdk';
+import { Keypair, TransactionBuilder, Networks } from '@stellar/stellar-base';
 
 // Salt used for PRF evaluation — must never change (changing it changes the derived G address).
 const PRF_SALT = new TextEncoder().encode('orbi-stellar-v1');

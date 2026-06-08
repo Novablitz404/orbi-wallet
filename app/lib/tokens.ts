@@ -9,7 +9,7 @@
  * Falls back to a first-letter avatar for any token not indexed.
  */
 
-import { Asset, Networks } from '@stellar/stellar-sdk';
+import { Asset, Networks } from '@stellar/stellar-base';
 import { getNetworkPreference } from './storage';
 
 export interface StellarToken {
