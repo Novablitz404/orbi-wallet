@@ -118,15 +118,6 @@ export default function SignPage() {
   }
 
   function sendCancel() {
-    const redirectUrl = new URLSearchParams(window.location.search).get('redirect');
-    if (redirectUrl) {
-      try {
-        const url = new URL(redirectUrl);
-        url.searchParams.set('cancelled', '1');
-        window.location.href = url.toString();
-        return;
-      } catch { /* fall through */ }
-    }
     const msg = { type: 'orbi_cancelled' };
     if (req?.channelId) {
       const bc = new BroadcastChannel(req.channelId);
@@ -151,15 +142,6 @@ export default function SignPage() {
         req.network,
         req.walletAddress || wallet.walletAddress,
       );
-
-      const redirectUrl = new URLSearchParams(window.location.search).get('redirect');
-      if (redirectUrl) {
-        const url = new URL(redirectUrl);
-        url.searchParams.set('gSignedXdr', signedXdr);
-        url.searchParams.set('walletAddress', req.walletAddress || wallet.walletAddress);
-        window.location.href = url.toString();
-        return;
-      }
 
       sendResult(signedXdr);
       setStep('done');

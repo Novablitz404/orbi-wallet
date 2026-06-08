@@ -17,33 +17,25 @@ export default function ConnectPage() {
   const [channelId, setChannelId] = useState('');
   const [walletAddress, setWalletAddress] = useState('');
   const [error, setError] = useState('');
-  const [redirectUrl, setRedirectUrl] = useState('');
 
   function handleCreateWallet() {
     const url = new URL(window.location.href);
     url.pathname = '/create';
-    // Keep origin + channelId (and redirect, if present) — create loops back
-    // here once the wallet is ready so the connect handshake can complete.
+    // Keep origin + channelId — create loops back here once the wallet is
+    // ready so the connect handshake can complete.
     window.location.href = url.toString();
   }
 
   function handleCancel() {
-    if (redirectUrl) {
-      // Redirect flow — go back to the originating page
-      window.location.href = new URL(redirectUrl).origin;
-    } else {
-      window.close();
-    }
+    window.close();
   }
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const o = params.get('origin') ?? '';
     const c = params.get('channelId') ?? '';
-    const r = params.get('redirect') ?? '';
     setOrigin(o);
     setChannelId(c);
-    setRedirectUrl(r);
 
     let name = o;
     try { name = new URL(o).hostname; } catch { /* keep raw origin */ }
@@ -57,7 +49,6 @@ export default function ConnectPage() {
     }
 
     setStep('connect');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function grantAndSend(w: StoredWallet, o: string, c: string, name: string) {
@@ -65,15 +56,7 @@ export default function ConnectPage() {
 
     if (o) addConnection(w.walletAddress, o, name);
 
-    if (redirectUrl) {
-      // Redirect flow (no popup) — wallet address is public, send it straight back
-      const url = new URL(redirectUrl);
-      url.searchParams.set('walletAddress', w.walletAddress);
-      window.location.href = url.toString();
-      return;
-    }
-
-    // Popup flow — BroadcastChannel + postMessage (for dApps using SDK)
+    // BroadcastChannel + postMessage handshake — see OrbiClient.connect()
     const msg = { type: 'orbi_connected', address: w.walletAddress, credentialId: w.credentialId, passkeyId: w.passkeyId };
     if (c) {
       const bc = new BroadcastChannel(c);

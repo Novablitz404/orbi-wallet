@@ -40,18 +40,9 @@ export default function CreateWalletPage() {
       saveWallet(walletData);
       setWalletAddress(gAddress);
 
-      const redirectUrl = new URLSearchParams(window.location.search).get('redirect');
-      if (redirectUrl) {
-        const url = new URL(redirectUrl);
-        url.searchParams.set('walletAddress', gAddress);
-        url.searchParams.set('walletType', 'prf-g');
-        window.location.href = url.toString();
-        return;
-      }
-
-      // Came from the connect popup with no redirect configured (e.g. via the
-      // SDK) — loop back so connect's own "already signed in" branch records
-      // the permission, sends `orbi_connected`, and closes the popup.
+      // Came from the connect popup (e.g. via the SDK) — loop back so
+      // connect's own "already signed in" branch records the permission,
+      // sends `orbi_connected`, and closes the popup.
       const origin = new URLSearchParams(window.location.search).get('origin');
       if (origin && !popupMode) {
         const back = new URL(window.location.href);
