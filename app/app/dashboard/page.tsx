@@ -87,6 +87,8 @@ export default function DashboardPage() {
   const [connections, setConnections] = useState<StoredConnection[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [networkMenuOpen, setNetworkMenuOpen] = useState(false);
+  const networkMenuRef = useRef<HTMLDivElement>(null);
   const mobileDropdownRef = useRef<HTMLDivElement>(null);
 
   // Send/Receive/Swap panel
@@ -174,6 +176,7 @@ export default function DashboardPage() {
       const outsideDesktop = !dropdownRef.current || !dropdownRef.current.contains(e.target as Node);
       const outsideMobile = !mobileDropdownRef.current || !mobileDropdownRef.current.contains(e.target as Node);
       if (outsideDesktop && outsideMobile) setDropdownOpen(false);
+      if (!networkMenuRef.current || !networkMenuRef.current.contains(e.target as Node)) setNetworkMenuOpen(false);
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
@@ -1037,16 +1040,37 @@ export default function DashboardPage() {
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg>
                     Add token
                   </button>
-                  <button
-                    onClick={() => {
-                      setNetworkPreference(NETWORK === 'mainnet' ? 'testnet' : 'mainnet');
-                      window.location.reload();
-                    }}
-                    title="Switch network — reloads the app"
-                    className="text-xs text-slate-500 hover:text-white px-3 py-1.5 rounded-lg border border-slate-700 hover:border-slate-500 bg-slate-800/50 transition-colors"
-                  >
-                    {NETWORK_LABEL}
-                  </button>
+                  <div className="relative" ref={networkMenuRef}>
+                    <button
+                      onClick={() => setNetworkMenuOpen(o => !o)}
+                      title="Switch network — reloads the app"
+                      className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white px-3 py-1.5 rounded-lg border border-slate-700 hover:border-slate-500 bg-slate-800/50 transition-colors"
+                    >
+                      {NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet'}
+                      <svg className={`w-3 h-3 text-slate-500 transition-transform ${networkMenuOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {networkMenuOpen && (
+                      <div className="absolute right-0 top-full mt-2 w-32 bg-slate-900 border border-slate-700/50 rounded-xl shadow-2xl shadow-black/50 overflow-hidden z-50">
+                        {(['mainnet', 'testnet'] as const).map(net => (
+                          <button
+                            key={net}
+                            onClick={() => {
+                              setNetworkMenuOpen(false);
+                              if (net === NETWORK) return;
+                              setNetworkPreference(net);
+                              window.location.reload();
+                            }}
+                            className={`flex items-center justify-between w-full px-3 py-2.5 text-sm transition-colors ${net === NETWORK ? 'text-white bg-slate-800' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'}`}
+                          >
+                            {net === 'mainnet' ? 'Mainnet' : 'Testnet'}
+                            {net === NETWORK && (
+                              <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 px-4 pb-2 border-b border-slate-800 text-slate-500 text-xs font-medium">
