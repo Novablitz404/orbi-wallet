@@ -58,3 +58,34 @@ export function removeConnection(walletAddress: string, origin: string): void {
   all[walletAddress] = (all[walletAddress] ?? []).filter(c => c.origin !== origin);
   localStorage.setItem(CONNECTIONS_KEY, JSON.stringify(all));
 }
+
+// ── cached balances (stale-while-revalidate) ──
+//
+// Last-known balances per wallet, so the dashboard can paint instantly on
+// load instead of the token list flickering empty until Horizon responds.
+// Always treated as provisional: the live fetch overwrites both this cache
+// and on-screen state the moment it lands, so a stale or wrong cached figure
+// never outlives the next successful refresh.
+
+const BALANCES_KEY = 'orbi_balances';
+
+export interface CachedBalances {
+  xlm: string;
+  tokens: Record<string, string>;
+}
+
+function loadAllCachedBalances(): Record<string, CachedBalances> {
+  if (typeof window === 'undefined') return {};
+  const raw = localStorage.getItem(BALANCES_KEY);
+  return raw ? JSON.parse(raw) : {};
+}
+
+export function loadCachedBalances(walletAddress: string): CachedBalances | null {
+  return loadAllCachedBalances()[walletAddress] ?? null;
+}
+
+export function saveCachedBalances(walletAddress: string, xlm: string, tokens: Record<string, string>): void {
+  const all = loadAllCachedBalances();
+  all[walletAddress] = { xlm, tokens };
+  localStorage.setItem(BALANCES_KEY, JSON.stringify(all));
+}

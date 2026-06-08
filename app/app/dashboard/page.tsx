@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { getConnections, type StoredConnection } from '../../lib/storage';
+import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { Networks, Asset, TransactionBuilder, Operation, Account, BASE_FEE } from '@stellar/stellar-sdk';
 import { OrbiClient } from '@orbi-wallet/sdk';
@@ -96,6 +96,10 @@ export default function DashboardPage() {
   const [sendError, setSendError] = useState('');
   const [sending, setSending] = useState(false);
   const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
+  // True while what's on screen is last-known cached data, not yet confirmed
+  // by a live Horizon read — drives the "Syncing…" hint so a stale figure is
+  // never presented as gospel (see refreshBalances).
+  const [balancesStale, setBalancesStale] = useState(false);
   const [selectedToken, setSelectedToken] = useState<SendToken>(XLM_SEND_TOKEN);
   const [tokenSelectorOpen, setTokenSelectorOpen] = useState(false);
   // Prefetched account (sequence number), kicked off when entering the send
@@ -155,16 +159,25 @@ export default function DashboardPage() {
       .then((d: { balances?: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string; balance: string }> }) => {
         const balances = d.balances ?? [];
         const native = balances.find(b => b.asset_type === 'native');
-        setXlmBalance(native?.balance ?? '0.0000000');
+        const xlm = native?.balance ?? '0.0000000';
 
         const map: Record<string, string> = {};
         for (const token of STELLAR_TOKENS) {
           const trustline = balances.find(b => b.asset_code === token.code && b.asset_issuer === token.issuer);
           if (trustline) map[token.sacId] = String(Math.round(parseFloat(trustline.balance) * 10 ** token.decimals));
         }
+
+        // Live data always wins — it overwrites both on-screen state and the
+        // cache, so a cached figure can never linger past its next refresh.
+        setXlmBalance(xlm);
         setTokenBalances(map);
+        setBalancesStale(false);
+        saveCachedBalances(addr, xlm, map);
       })
-      .catch(() => setXlmBalance('0.0000000'));
+      // A failed refresh shouldn't blank out a balance we already know (from
+      // cache or an earlier load) — "stale" beats "wrong". Only fall back to
+      // zero if we truly have nothing to show yet.
+      .catch(() => setXlmBalance(prev => prev ?? '0.0000000'));
   }
 
   const TX_PAGE_SIZE = 10;
@@ -223,6 +236,17 @@ export default function DashboardPage() {
     if (!addr) { router.replace('/'); return; }
     setWalletAddress(addr);
     setConnections(getConnections(addr));
+
+    // Paint last-known balances immediately (stale-while-revalidate) — this is
+    // what gives returning users the same "instantly there" feel XLM has,
+    // instead of every non-zero token row blinking out until the live read
+    // lands. The live fetch below reconciles (and overwrites) it right away.
+    const cached = loadCachedBalances(addr);
+    if (cached) {
+      setXlmBalance(cached.xlm);
+      setTokenBalances(cached.tokens);
+      setBalancesStale(true);
+    }
 
     refreshBalances(addr);
 
@@ -767,7 +791,16 @@ export default function DashboardPage() {
           {activeNav === 'assets' && (
             <>
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-white font-medium">Tokens</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-white font-medium">Tokens</h2>
+                  {/* Cached balances paint instantly but aren't confirmed yet —
+                      this hint is what makes that distinction honest (the fix
+                      for stale-while-revalidate's "could be wrong" trade-off):
+                      it disappears the moment the live read reconciles. */}
+                  {balancesStale && (
+                    <span className="text-xs text-amber-400/80 animate-pulse">Syncing…</span>
+                  )}
+                </div>
                 <span className="text-xs text-slate-500 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/50">Stellar Testnet</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 px-4 pb-2 border-b border-slate-800 text-slate-500 text-xs font-medium">
@@ -791,7 +824,31 @@ export default function DashboardPage() {
                 <div className="text-right hidden md:block"><p className="text-white text-sm">{xlmPrice ? `$${xlmPrice.toFixed(4)}` : '—'}</p></div>
               </div>
 
-              {tokenEntries.map(({ token, bal, price, usd }) => {
+              {xlmBalance === null ? (
+                // True cold start — neither cache nor a live read has landed
+                // yet. Mirror XLM's always-present row for the curated tokens
+                // too, so they paint a placeholder instead of popping in once
+                // the fetch resolves (the original "not persistent" bug).
+                <SkeletonTheme baseColor="#1e293b" highlightColor="#334155">
+                  {getDisplayTokens().map(t => (
+                    <div key={t.sacId} className="grid grid-cols-2 md:grid-cols-4 px-4 py-4 items-center">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Skeleton circle width={36} height={36} />
+                        <div className="min-w-0 flex-1">
+                          <Skeleton width="50%" height={13} className="mb-1.5" />
+                          <Skeleton width="30%" height={11} />
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <Skeleton width={64} height={13} className="mb-1.5" />
+                        <Skeleton width={80} height={11} />
+                      </div>
+                      <div className="hidden md:flex justify-end"><Skeleton width={40} height={13} /></div>
+                      <div className="hidden md:flex justify-end"><Skeleton width={56} height={13} /></div>
+                    </div>
+                  ))}
+                </SkeletonTheme>
+              ) : tokenEntries.map(({ token, bal, price, usd }) => {
                 if (bal === 0) return null;
                 const tokenPct = pct(usd);
                 return (
