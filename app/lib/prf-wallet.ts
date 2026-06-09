@@ -59,6 +59,11 @@ export async function registerPRFWallet(): Promise<PRFWalletCredential> {
         userVerification: 'required',
         residentKey: 'preferred',
       },
+      // hint the browser toward phone (hybrid) first, then on-device — this
+      // surfaces the QR-code option on desktops that have no fingerprint reader
+      // instead of defaulting to a USB security key prompt.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...({ hints: ['hybrid', 'client-device'] } as any),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       extensions: { prf: { eval: { first: PRF_SALT } } } as any,
     },
@@ -68,7 +73,7 @@ export async function registerPRFWallet(): Promise<PRFWalletCredential> {
   const prf = (credential.getClientExtensionResults() as any).prf;
   if (!prf?.results?.first) {
     throw new Error(
-      'PRF not supported on this device. Use Safari on iOS 17+ / macOS Sonoma+, or Chrome 118+.',
+      'Passkey created but PRF is not supported on this authenticator. On desktop, try scanning the QR code with your phone (Chrome on Android or Safari on iPhone).',
     );
   }
 
