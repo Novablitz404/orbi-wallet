@@ -42,6 +42,7 @@ const DEFAULTS: Record<'mainnet' | 'testnet', TokenDef[]> = {
   mainnet: [
     { code: 'USDC', name: 'USD Coin', issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN', decimals: 7 },
     { code: 'EURC', name: 'Euro Coin', issuer: 'GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2', decimals: 7 },
+    { code: 'USDY', name: 'US Dollar Yield', issuer: 'GAJMPX5NBOG6TQFPQGRABJEEB2YE7RFRLUKJDZAZGAD5GFX4J7TADAZ6', decimals: 7 },
     { code: 'AQUA', name: 'Aquarius', issuer: 'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA', decimals: 7 },
     { code: 'yXLM', name: 'Yield XLM', issuer: 'GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55', decimals: 7 },
   ],
@@ -57,6 +58,7 @@ export const TOKEN_PRICE_IDS: Record<string, string> = {
   XLM: 'stellar',
   USDC: 'usd-coin',
   EURC: 'euro-coin',
+  USDY: 'ondo-us-dollar-yield',
   AQUA: 'aquarius',
   yXLM: 'stellar',
 };
