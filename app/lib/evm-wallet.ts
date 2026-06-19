@@ -1,12 +1,12 @@
-import { createWalletClient, createPublicClient, http, parseEther, type Hex } from 'viem';
+import { createWalletClient, createPublicClient, http, type Hex, type LocalAccount, type TypedDataDefinition } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { botchain, type EvmNetwork } from './chains';
+import { getEvmChain } from './chains';
 
 // Same PRF eval salt as the Stellar wallet, so the *same passkey* produces the
 // same PRF output (lib/prf-wallet.ts uses 'orbi-stellar-v1'). The chain split
 // happens at HKDF: a distinct salt derives an independent secp256k1 key, so the
 // EVM 0x address is unrelated to the Stellar G address while still coming from
-// one passkey tap.
+// one passkey tap. The resulting key is the same across every EVM chain.
 const PRF_SALT = new TextEncoder().encode('orbi-stellar-v1');
 const HKDF_SALT = new TextEncoder().encode('orbi-evm-hkdf-v1');
 
@@ -101,20 +101,17 @@ export async function deriveEvmAddress(credentialId?: string): Promise<EvmWallet
 }
 
 /**
- * Sign and submit a native-BOT transfer on BotChain. Derives the secp256k1 key
- * from the passkey, verifies it matches expectedAddress, signs, and broadcasts
- * via JSON-RPC (no relayer). Returns the transaction hash.
+ * Derive the secp256k1 account from the passkey, verify it matches
+ * `expectedAddress`, hand it to `fn`, then zero the key material. Every signing
+ * operation goes through here so the key lives in memory only for the call.
  */
-export async function sendEvmPayment(
+async function withEvmAccount<T>(
   credentialId: string,
-  network: EvmNetwork,
-  to: string,
-  amountEther: string,
   expectedAddress: string,
-): Promise<Hex> {
+  fn: (account: LocalAccount) => Promise<T>,
+): Promise<T> {
   const { prfOutput } = await getPrfOutput(credentialId);
   const seed = await hkdfDerive(prfOutput);
-
   const account = privateKeyToAccount(toHex(seed));
 
   if (account.address.toLowerCase() !== expectedAddress.toLowerCase()) {
@@ -123,22 +120,68 @@ export async function sendEvmPayment(
     throw new Error('Passkey does not match this wallet address');
   }
 
-  const chain = botchain(network);
-  const wallet = createWalletClient({ account, chain, transport: http() });
-
-  const hash = await wallet.sendTransaction({
-    to: to as Hex,
-    value: parseEther(amountEther),
-  });
-
-  seed.fill(0);
-  prfOutput.fill(0);
-
-  return hash;
+  try {
+    return await fn(account);
+  } finally {
+    seed.fill(0);
+    prfOutput.fill(0);
+  }
 }
 
-/** Read native BOT balance (in wei) for an address. */
-export async function getEvmBalance(network: EvmNetwork, address: string): Promise<bigint> {
-  const client = createPublicClient({ chain: botchain(network), transport: http() });
+export interface EvmTxRequest {
+  to: string;
+  value?: string;  // wei, decimal string
+  data?: string;   // 0x calldata for contract calls
+  gas?: string;    // optional gas limit (decimal)
+}
+
+/**
+ * Sign and submit any EVM transaction (native transfer OR contract call) on the
+ * given chain, then return the tx hash. viem fills in nonce/gas/fees from the
+ * RPC when omitted. Relay-free — broadcast straight to the chain's RPC.
+ */
+export async function sendEvmTransaction(
+  credentialId: string,
+  chainId: number,
+  tx: EvmTxRequest,
+  expectedAddress: string,
+): Promise<Hex> {
+  const chain = getEvmChain(chainId);
+  return withEvmAccount(credentialId, expectedAddress, (account) => {
+    const wallet = createWalletClient({ account, chain, transport: http() });
+    return wallet.sendTransaction({
+      to: tx.to as Hex,
+      value: tx.value ? BigInt(tx.value) : undefined,
+      data: tx.data ? (tx.data as Hex) : undefined,
+      gas: tx.gas ? BigInt(tx.gas) : undefined,
+    });
+  });
+}
+
+/** Sign an arbitrary message (EIP-191 / personal_sign). Used for dApp login (SIWE). */
+export async function signEvmMessage(
+  credentialId: string,
+  message: string,
+  expectedAddress: string,
+): Promise<Hex> {
+  return withEvmAccount(credentialId, expectedAddress, (account) =>
+    account.signMessage({ message }),
+  );
+}
+
+/** Sign EIP-712 typed data (eth_signTypedData_v4). Used for permits, listings, etc. */
+export async function signEvmTypedData(
+  credentialId: string,
+  typedData: TypedDataDefinition,
+  expectedAddress: string,
+): Promise<Hex> {
+  return withEvmAccount(credentialId, expectedAddress, (account) =>
+    account.signTypedData(typedData),
+  );
+}
+
+/** Read native-token balance (in wei) for an address on the given chain. */
+export async function getEvmBalance(chainId: number, address: string): Promise<bigint> {
+  const client = createPublicClient({ chain: getEvmChain(chainId), transport: http() });
   return client.getBalance({ address: address as Hex });
 }

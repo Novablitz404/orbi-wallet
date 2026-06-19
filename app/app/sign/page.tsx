@@ -3,12 +3,16 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-base';
+import { formatEther, type TypedDataDefinition } from 'viem';
 import { loadWallet, type Chain } from '../../lib/storage';
 import { signTransactionWithPRF } from '../../lib/prf-wallet';
-import { sendEvmPayment } from '../../lib/evm-wallet';
+import { sendEvmTransaction, signEvmMessage, signEvmTypedData } from '../../lib/evm-wallet';
+import { getEvmChain } from '../../lib/chains';
 import { TREASURY_ADDRESS } from '../../lib/tokens';
 
 type Step = 'loading' | 'review' | 'signing' | 'done' | 'error';
+
+type EvmAction = 'tx' | 'message' | 'typedData';
 
 interface SignRequest {
   channelId: string;
@@ -16,10 +20,15 @@ interface SignRequest {
   chain: Chain;
   // Stellar
   xdr: string;            // base64 TransactionEnvelope XDR
-  // BotChain (EVM)
-  to: string;
-  value: string;          // amount in BOT
   network: 'testnet' | 'mainnet';
+  // EVM
+  evmAction: EvmAction;
+  chainId: number;
+  to: string;
+  value: string;          // wei (decimal string)
+  data: string;           // 0x calldata
+  message: string;        // personal_sign payload
+  typedData: string;      // JSON for eth_signTypedData_v4
   origin: string;
 }
 
@@ -73,10 +82,35 @@ function summariseGTx(txXdr: string, network: 'testnet' | 'mainnet'): { lines: s
   }
 }
 
+// Human summary for an EVM request. Note the inherent clear-signing limit:
+// arbitrary contract calls can't be fully decoded the way Stellar XDR can, so
+// we surface to/value/calldata honestly rather than pretending to interpret it.
+function summariseEvm(r: SignRequest): string[] {
+  let symbol = 'ETH';
+  try { symbol = getEvmChain(r.chainId).nativeCurrency.symbol; } catch { /* unknown chain */ }
+
+  if (r.evmAction === 'message') return ['Sign message', r.message];
+  if (r.evmAction === 'typedData') {
+    try {
+      const td = JSON.parse(r.typedData);
+      return ['Sign typed data', td?.domain?.name ? `Domain: ${td.domain.name}` : 'EIP-712'];
+    } catch { return ['Sign typed data']; }
+  }
+
+  const short = `${r.to.slice(0, 6)}…${r.to.slice(-4)}`;
+  const amount = r.value && r.value !== '0' ? `${formatEther(BigInt(r.value))} ${symbol}` : null;
+  if (r.data) {
+    return amount ? [`Contract call to ${short}`, `Value: ${amount}`] : [`Contract call to ${short}`];
+  }
+  return [`Send ${amount ?? `0 ${symbol}`} to ${short}`];
+}
+
 /**
  * keys.orbiwallet.xyz/sign
  *
- * URL params: xdr (raw transaction envelope, base64), network, walletAddress, origin.
+ * Stellar URL params: xdr, network, walletAddress, origin.
+ * EVM URL params: chain=botchain, evmAction (tx|message|typedData), chainId,
+ * to/value/data | message | typedData, walletAddress, origin.
  */
 export default function SignPage() {
   const [step, setStep] = useState<Step>('loading');
@@ -89,20 +123,30 @@ export default function SignPage() {
     const params = new URLSearchParams(window.location.search);
     const chain: Chain = params.get('chain') === 'botchain' ? 'botchain' : 'stellar';
     const network = (params.get('network') ?? 'testnet') as 'testnet' | 'mainnet';
+    const evmAction = (params.get('evmAction') ?? 'tx') as EvmAction;
 
     const r: SignRequest = {
       channelId: params.get('channelId') ?? '',
       walletAddress: params.get('walletAddress') ?? '',
       chain,
       xdr: params.get('xdr') ?? '',
+      network,
+      evmAction,
+      chainId: Number(params.get('chainId') ?? 0),
       to: params.get('to') ?? '',
       value: params.get('value') ?? '',
-      network,
+      data: params.get('data') ?? '',
+      message: params.get('message') ?? '',
+      typedData: params.get('typedData') ?? '',
       origin: params.get('origin') ?? '',
     };
 
     if (chain === 'stellar' && !r.xdr) { setError('Missing transaction XDR'); setStep('error'); return; }
-    if (chain === 'botchain' && (!r.to || !r.value)) { setError('Missing transaction details'); setStep('error'); return; }
+    if (chain === 'botchain') {
+      if (evmAction === 'tx' && (!r.to || !r.chainId)) { setError('Missing transaction details'); setStep('error'); return; }
+      if (evmAction === 'message' && !r.message) { setError('Missing message'); setStep('error'); return; }
+      if (evmAction === 'typedData' && !r.typedData) { setError('Missing typed data'); setStep('error'); return; }
+    }
 
     // If walletAddress wasn't provided in URL, get it from storage
     if (!r.walletAddress) {
@@ -116,7 +160,7 @@ export default function SignPage() {
       setGSummary(summary.lines);
       setFeeXlm(summary.feeXlm);
     } else {
-      setGSummary([`Send ${r.value} BOT to ${r.to.slice(0, 6)}…${r.to.slice(-4)}`]);
+      setGSummary(summariseEvm(r));
       setFeeXlm(null);
     }
     setStep('review');
@@ -141,6 +185,11 @@ export default function SignPage() {
     setTimeout(() => window.close(), 500);
   }
 
+  function sendEvmSignature(signature: string) {
+    postToOpener({ type: 'orbi_evm_signed', signature, walletAddress: req?.walletAddress });
+    setTimeout(() => window.close(), 500);
+  }
+
   function sendCancel() {
     postToOpener({ type: 'orbi_cancelled' });
     window.close();
@@ -156,8 +205,20 @@ export default function SignPage() {
       const expected = req.walletAddress || wallet.walletAddress;
 
       if (req.chain === 'botchain') {
-        const txHash = await sendEvmPayment(wallet.credentialId, req.network, req.to, req.value, expected);
-        sendEvmResult(txHash);
+        if (req.evmAction === 'message') {
+          sendEvmSignature(await signEvmMessage(wallet.credentialId, req.message, expected));
+        } else if (req.evmAction === 'typedData') {
+          const typedData = JSON.parse(req.typedData) as TypedDataDefinition;
+          sendEvmSignature(await signEvmTypedData(wallet.credentialId, typedData, expected));
+        } else {
+          const txHash = await sendEvmTransaction(
+            wallet.credentialId,
+            req.chainId,
+            { to: req.to, value: req.value || undefined, data: req.data || undefined },
+            expected,
+          );
+          sendEvmResult(txHash);
+        }
       } else {
         const signedXdr = await signTransactionWithPRF(wallet.credentialId, req.xdr, req.network, expected);
         sendResult(signedXdr);
@@ -186,7 +247,9 @@ export default function SignPage() {
         {step === 'review' && req && (
           <>
             <div className="text-center">
-              <h1 className="text-xl font-bold text-white">Approve Transaction</h1>
+              <h1 className="text-xl font-bold text-white">
+                {req.chain === 'botchain' && req.evmAction !== 'tx' ? 'Signature Request' : 'Approve Transaction'}
+              </h1>
               <p className="text-slate-400 text-sm mt-1">{appName} is requesting your signature</p>
             </div>
 
@@ -200,12 +263,20 @@ export default function SignPage() {
               <div className="flex justify-between">
                 <span className="text-slate-400">Network</span>
                 <span className="text-white capitalize">
-                  {req.chain === 'botchain' ? `BOT Chain ${req.network}` : `Stellar ${req.network}`}
+                  {req.chain === 'botchain'
+                    ? (() => { try { return getEvmChain(req.chainId).name; } catch { return 'BOT Chain'; } })()
+                    : `Stellar ${req.network}`}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Fee</span>
-                <span className="text-white">{feeXlm !== null ? `${feeXlm} XLM` : req.chain === 'botchain' ? 'Gas in BOT' : '—'}</span>
+                <span className="text-white">
+                  {feeXlm !== null
+                    ? `${feeXlm} XLM`
+                    : req.chain === 'botchain' && req.evmAction === 'tx'
+                      ? 'Gas in network token'
+                      : '—'}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Requested by</span>

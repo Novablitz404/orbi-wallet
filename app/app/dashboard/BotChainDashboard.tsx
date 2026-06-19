@@ -3,14 +3,15 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { formatEther } from 'viem';
+import { formatEther, parseEther } from 'viem';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import { getNetworkPreference, setNetworkPreference, type StellarNetwork } from '../../lib/storage';
 import { getEvmBalance } from '../../lib/evm-wallet';
-import { botchain } from '../../lib/chains';
+import { getEvmChain, defaultEvmChainId } from '../../lib/chains';
 
 const NETWORK = getNetworkPreference();
-const orbi = new OrbiClient({ network: NETWORK, chain: 'botchain' });
+const CHAIN_ID = defaultEvmChainId(NETWORK);
+const orbi = new OrbiClient({ network: NETWORK, chain: 'botchain', chainId: CHAIN_ID });
 
 export default function BotChainDashboard({ onSwitchChain }: { onSwitchChain: () => void }) {
   const router = useRouter();
@@ -36,7 +37,7 @@ export default function BotChainDashboard({ onSwitchChain }: { onSwitchChain: ()
 
   async function refresh(addr: string) {
     try {
-      setBalance(formatEther(await getEvmBalance(network, addr)));
+      setBalance(formatEther(await getEvmBalance(CHAIN_ID, addr)));
     } catch {
       setBalance(null);
     }
@@ -55,7 +56,12 @@ export default function BotChainDashboard({ onSwitchChain }: { onSwitchChain: ()
     try {
       // Signing + submission happen in the keys.orbiwallet.xyz popup (the
       // passkey's origin), then the tx hash comes back over postMessage.
-      const { txHash } = await orbi.signEvmTransaction({ to: to.trim(), value: amount.trim() });
+      // SDK takes value in wei; the input is in the chain's native unit.
+      const { txHash } = await orbi.signEvmTransaction({
+        to: to.trim(),
+        value: parseEther(amount.trim()).toString(),
+        chainId: CHAIN_ID,
+      });
       setTxHash(txHash);
       setTo('');
       setAmount('');
@@ -81,7 +87,7 @@ export default function BotChainDashboard({ onSwitchChain }: { onSwitchChain: ()
 
   if (!address) return null;
 
-  const explorer = botchain(network).blockExplorers.default.url;
+  const explorer = getEvmChain(CHAIN_ID).blockExplorers!.default.url;
 
   return (
     <main className="min-h-screen bg-[#020817] text-white px-4 py-8">
