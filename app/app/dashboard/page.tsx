@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { OrbiClient, type OrbiChain } from '@orbi-wallet/sdk';
 import { getNetworkPreference } from '../../lib/storage';
 import StellarDashboard from './StellarDashboard';
-import BotChainDashboard from './BotChainDashboard';
+import EvmDashboard from './EvmDashboard';
 
 // Thin shell: reads the active chain from the SDK session and renders the
 // matching dashboard. Each sub-dashboard owns its own hooks (rules-of-hooks
@@ -35,6 +35,6 @@ export default function DashboardPage() {
   if (!chain) return null;
 
   return chain === 'botchain'
-    ? <BotChainDashboard onSwitchChain={switchChain} />
+    ? <EvmDashboard onSwitchChain={switchChain} />
     : <StellarDashboard onSwitchChain={switchChain} />;
 }
