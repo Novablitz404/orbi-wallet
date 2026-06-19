@@ -161,7 +161,7 @@ export default function CreateWalletPage() {
             )}
 
             <button
-              onClick={() => router.push(chain === 'botchain' ? '/evm' : '/dashboard')}
+              onClick={() => router.push('/dashboard')}
               className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
             >
               Go to Dashboard

@@ -12,7 +12,7 @@ import { botchain } from '../../lib/chains';
 const NETWORK = getNetworkPreference();
 const orbi = new OrbiClient({ network: NETWORK, chain: 'botchain' });
 
-export default function EvmDashboard() {
+export default function BotChainDashboard({ onSwitchChain }: { onSwitchChain: () => void }) {
   const router = useRouter();
   const [address, setAddress] = useState<string | null>(null);
   const [network] = useState<StellarNetwork>(NETWORK);
@@ -26,7 +26,6 @@ export default function EvmDashboard() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    // Must have an active BotChain session (from the keys popup connect).
     if (orbi.getAddress() && orbi.getChain() === 'botchain') {
       setAddress(orbi.getAddress());
     } else {
@@ -92,7 +91,10 @@ export default function EvmDashboard() {
             <span className="font-semibold">BOT Chain</span>
             <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-400 capitalize">{network}</span>
           </div>
-          <button onClick={signOut} className="text-xs text-slate-500 hover:text-slate-300">Sign out</button>
+          <div className="flex items-center gap-3">
+            <button onClick={onSwitchChain} className="text-xs text-slate-400 hover:text-white">Switch to Stellar</button>
+            <button onClick={signOut} className="text-xs text-slate-500 hover:text-slate-300">Sign out</button>
+          </div>
         </div>
 
         <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-6 flex flex-col items-center gap-2">

@@ -50,7 +50,7 @@ export default function SignInPage() {
       };
       saveWallet(wallet);
       setChainPreference(chain);
-      router.replace(chain === 'botchain' ? '/evm' : '/dashboard');
+      router.replace('/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign in failed');
       setStatus('error');

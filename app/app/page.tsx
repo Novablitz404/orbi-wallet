@@ -19,7 +19,7 @@ export default function Home() {
   // Returning visitor — skip the picker and go to the dashboard for whichever
   // chain the cached SDK session is on.
   useEffect(() => {
-    if (orbi.getAddress()) router.replace(orbi.getChain() === 'botchain' ? '/evm' : '/dashboard');
+    if (orbi.getAddress()) router.replace('/dashboard');
   }, [router]);
 
   async function handlePick(chain: Chain) {
@@ -30,7 +30,7 @@ export default function Home() {
       // Both chains derive/sign on keys.orbiwallet.xyz (where the passkey
       // lives), via the same SDK popup handshake — just a different chain param.
       await orbi.connect({ chain });
-      router.replace(chain === 'botchain' ? '/evm' : '/dashboard');
+      router.replace('/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Connection failed');
       setConnecting(false);
