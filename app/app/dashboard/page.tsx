@@ -284,6 +284,8 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
+    // BotChain sessions belong on the EVM dashboard, not this Stellar one.
+    if (orbi.getChain() === 'botchain') { router.replace('/evm'); return; }
     const addr = orbi.getAddress();
     if (!addr) { router.replace('/'); return; }
     setWalletAddress(addr);

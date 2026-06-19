@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-base';
-import { loadWallet } from '../../lib/storage';
+import { loadWallet, type Chain } from '../../lib/storage';
 import { signTransactionWithPRF } from '../../lib/prf-wallet';
+import { sendEvmPayment } from '../../lib/evm-wallet';
 import { TREASURY_ADDRESS } from '../../lib/tokens';
 
 type Step = 'loading' | 'review' | 'signing' | 'done' | 'error';
@@ -12,7 +13,12 @@ type Step = 'loading' | 'review' | 'signing' | 'done' | 'error';
 interface SignRequest {
   channelId: string;
   walletAddress: string;
+  chain: Chain;
+  // Stellar
   xdr: string;            // base64 TransactionEnvelope XDR
+  // BotChain (EVM)
+  to: string;
+  value: string;          // amount in BOT
   network: 'testnet' | 'mainnet';
   origin: string;
 }
@@ -81,18 +87,22 @@ export default function SignPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const txXdr = params.get('xdr');
-
-    if (!txXdr) { setError('Missing transaction XDR'); setStep('error'); return; }
-
+    const chain: Chain = params.get('chain') === 'botchain' ? 'botchain' : 'stellar';
     const network = (params.get('network') ?? 'testnet') as 'testnet' | 'mainnet';
+
     const r: SignRequest = {
       channelId: params.get('channelId') ?? '',
       walletAddress: params.get('walletAddress') ?? '',
-      xdr: txXdr,
+      chain,
+      xdr: params.get('xdr') ?? '',
+      to: params.get('to') ?? '',
+      value: params.get('value') ?? '',
       network,
       origin: params.get('origin') ?? '',
     };
+
+    if (chain === 'stellar' && !r.xdr) { setError('Missing transaction XDR'); setStep('error'); return; }
+    if (chain === 'botchain' && (!r.to || !r.value)) { setError('Missing transaction details'); setStep('error'); return; }
 
     // If walletAddress wasn't provided in URL, get it from storage
     if (!r.walletAddress) {
@@ -101,31 +111,38 @@ export default function SignPage() {
     }
 
     setReq(r);
-    const summary = summariseGTx(r.xdr, r.network);
-    setGSummary(summary.lines);
-    setFeeXlm(summary.feeXlm);
+    if (chain === 'stellar') {
+      const summary = summariseGTx(r.xdr, r.network);
+      setGSummary(summary.lines);
+      setFeeXlm(summary.feeXlm);
+    } else {
+      setGSummary([`Send ${r.value} BOT to ${r.to.slice(0, 6)}…${r.to.slice(-4)}`]);
+      setFeeXlm(null);
+    }
     setStep('review');
   }, []);
 
-  function sendResult(signedXdr: string) {
-    const msg = { type: 'orbi_g_signed', signedXdr, walletAddress: req?.walletAddress };
+  function postToOpener(msg: Record<string, unknown>) {
     if (req?.channelId) {
       const bc = new BroadcastChannel(req.channelId);
       bc.postMessage(msg);
       bc.close();
     }
     try { if (window.opener) window.opener.postMessage(msg, '*'); } catch { /* COOP */ }
+  }
+
+  function sendResult(signedXdr: string) {
+    postToOpener({ type: 'orbi_g_signed', signedXdr, walletAddress: req?.walletAddress });
+    setTimeout(() => window.close(), 500);
+  }
+
+  function sendEvmResult(txHash: string) {
+    postToOpener({ type: 'orbi_evm_sent', txHash, walletAddress: req?.walletAddress });
     setTimeout(() => window.close(), 500);
   }
 
   function sendCancel() {
-    const msg = { type: 'orbi_cancelled' };
-    if (req?.channelId) {
-      const bc = new BroadcastChannel(req.channelId);
-      bc.postMessage(msg);
-      bc.close();
-    }
-    try { if (window.opener) window.opener.postMessage(msg, '*'); } catch { /* COOP */ }
+    postToOpener({ type: 'orbi_cancelled' });
     window.close();
   }
 
@@ -136,15 +153,15 @@ export default function SignPage() {
     try {
       const wallet = loadWallet();
       if (!wallet) throw new Error('Not signed in');
+      const expected = req.walletAddress || wallet.walletAddress;
 
-      const signedXdr = await signTransactionWithPRF(
-        wallet.credentialId,
-        req.xdr,
-        req.network,
-        req.walletAddress || wallet.walletAddress,
-      );
-
-      sendResult(signedXdr);
+      if (req.chain === 'botchain') {
+        const txHash = await sendEvmPayment(wallet.credentialId, req.network, req.to, req.value, expected);
+        sendEvmResult(txHash);
+      } else {
+        const signedXdr = await signTransactionWithPRF(wallet.credentialId, req.xdr, req.network, expected);
+        sendResult(signedXdr);
+      }
       setStep('done');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Signing failed');
@@ -182,11 +199,13 @@ export default function SignPage() {
               ))}
               <div className="flex justify-between">
                 <span className="text-slate-400">Network</span>
-                <span className="text-white capitalize">{req.network}</span>
+                <span className="text-white capitalize">
+                  {req.chain === 'botchain' ? `BOT Chain ${req.network}` : `Stellar ${req.network}`}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Fee</span>
-                <span className="text-white">{feeXlm !== null ? `${feeXlm} XLM` : '—'}</span>
+                <span className="text-white">{feeXlm !== null ? `${feeXlm} XLM` : req.chain === 'botchain' ? 'Gas in BOT' : '—'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Requested by</span>

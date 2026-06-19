@@ -3,8 +3,9 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import BackButton from '../../components/BackButton';
-import { saveWallet } from '../../lib/storage';
-import { registerPRFWallet } from '../../lib/prf-wallet';
+import ChainSelector from '../../components/ChainSelector';
+import { saveWallet, loadWallet, setChainPreference, getChainPreference, type Chain, type StoredWallet } from '../../lib/storage';
+import { registerPRFWallet, signInWithPRF } from '../../lib/prf-wallet';
 
 type Step = 'passkey' | 'done';
 
@@ -13,6 +14,7 @@ export default function CreateWalletPage() {
   const [step, setStep] = useState<Step>('passkey');
   const [popupMode, setPopupMode] = useState(false);
   const [channelId, setChannelId] = useState('');
+  const [chain, setChain] = useState<Chain>('stellar');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -20,6 +22,8 @@ export default function CreateWalletPage() {
       setPopupMode(true);
       setChannelId(params.get('channelId') ?? '');
     }
+    const c = params.get('chain');
+    setChain(c === 'botchain' || c === 'stellar' ? c : getChainPreference());
   }, []);
 
   const [error, setError] = useState('');
@@ -30,15 +34,27 @@ export default function CreateWalletPage() {
     setError('');
     setLoading(true);
     try {
-      const { credentialId, gAddress } = await registerPRFWallet();
-      const walletData = {
-        walletAddress: gAddress,
+      // One passkey backs every chain. If the user already has an Orbi passkey,
+      // "creating" a wallet on a new chain just re-derives its address (no new
+      // passkey); otherwise we register the passkey for the first time. Either
+      // path yields both the Stellar and EVM addresses from a single tap.
+      const existing = loadWallet();
+      const { credentialId, gAddress, evmAddress } = existing
+        ? await signInWithPRF(existing.credentialId)
+        : await registerPRFWallet();
+
+      const address = chain === 'stellar' ? gAddress : evmAddress;
+      const walletData: StoredWallet = {
+        walletAddress: address,
         credentialId,
         passkeyId: '',
-        walletType: 'prf-g' as const,
+        walletType: 'prf-g',
+        chain,
+        addresses: { stellar: gAddress, botchain: evmAddress },
       };
       saveWallet(walletData);
-      setWalletAddress(gAddress);
+      setChainPreference(chain);
+      setWalletAddress(address);
 
       // Came from the connect popup (e.g. via the SDK) — loop back so
       // connect's own "already signed in" branch records the permission,
@@ -79,6 +95,8 @@ export default function CreateWalletPage() {
                 Your device will generate a passkey. No seed phrase — your wallet address is derived from it.
               </p>
             </div>
+
+            <ChainSelector value={chain} onChange={setChain} disabled={loading} />
 
             <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-6 flex flex-col items-center gap-4">
               <div className="w-16 h-16 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center">
@@ -122,7 +140,9 @@ export default function CreateWalletPage() {
               </div>
               <h2 className="text-2xl font-bold text-white">Wallet created!</h2>
               <p className="text-slate-400 text-sm text-center">
-                Your G wallet is ready. Deposit at least 1 XLM to activate it on Stellar.
+                {chain === 'stellar'
+                  ? 'Your G wallet is ready. Deposit at least 1 XLM to activate it on Stellar.'
+                  : 'Your BOT Chain wallet is ready. Send BOT to this address to fund it.'}
               </p>
             </div>
 
@@ -131,15 +151,17 @@ export default function CreateWalletPage() {
               <p className="text-slate-200 text-xs font-mono break-all">{walletAddress}</p>
             </div>
 
-            <div className="flex items-start gap-2 p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
-              <svg className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <p className="text-yellow-400 text-xs">Deposit at least 1 XLM to this address to activate your account on the Stellar network.</p>
-            </div>
+            {chain === 'stellar' && (
+              <div className="flex items-start gap-2 p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
+                <svg className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <p className="text-yellow-400 text-xs">Deposit at least 1 XLM to this address to activate your account on the Stellar network.</p>
+              </div>
+            )}
 
             <button
-              onClick={() => router.push('/dashboard')}
+              onClick={() => router.push(chain === 'botchain' ? '/evm' : '/dashboard')}
               className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
             >
               Go to Dashboard

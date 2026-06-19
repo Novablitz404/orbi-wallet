@@ -1,4 +1,5 @@
 import { Keypair, TransactionBuilder, Networks } from '@stellar/stellar-base';
+import { deriveEvmAddressFromPrf } from './evm-wallet';
 
 // Salt used for PRF evaluation — must never change (changing it changes the derived G address).
 const PRF_SALT = new TextEncoder().encode('orbi-stellar-v1');
@@ -34,6 +35,7 @@ function fromBase64url(b64: string): Uint8Array {
 export interface PRFWalletCredential {
   credentialId: string; // base64url
   gAddress: string;     // G... Stellar address
+  evmAddress: string;   // 0x… BotChain/EVM address (same passkey, secp256k1)
 }
 
 /**
@@ -83,12 +85,17 @@ export async function registerPRFWallet(): Promise<PRFWalletCredential> {
   const keypair = Keypair.fromRawEd25519Seed(Buffer.from(seed));
   const gAddress = keypair.publicKey();
 
+  // Same passkey also yields the EVM address (secp256k1) from this one PRF
+  // output, so picking BotChain at creation doesn't need a second tap.
+  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
+
   seed.fill(0);
   prfOutput.fill(0);
 
   return {
     credentialId: toBase64url(new Uint8Array(credential.rawId)),
     gAddress,
+    evmAddress,
   };
 }
 
@@ -96,7 +103,7 @@ export async function registerPRFWallet(): Promise<PRFWalletCredential> {
  * Sign in with PRF — derives the G address from the passkey.
  * Returns the G address. Caller should verify the address matches the stored wallet.
  */
-export async function signInWithPRF(credentialId?: string): Promise<{ gAddress: string; credentialId: string }> {
+export async function signInWithPRF(credentialId?: string): Promise<{ gAddress: string; evmAddress: string; credentialId: string }> {
   const credIdBytes = credentialId ? fromBase64url(credentialId) : undefined;
 
   const assertion = await navigator.credentials.get({
@@ -122,11 +129,14 @@ export async function signInWithPRF(credentialId?: string): Promise<{ gAddress: 
   const keypair = Keypair.fromRawEd25519Seed(Buffer.from(seed));
   const gAddress = keypair.publicKey();
 
+  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
+
   seed.fill(0);
   prfOutput.fill(0);
 
   return {
     gAddress,
+    evmAddress,
     credentialId: toBase64url(new Uint8Array(assertion.rawId)),
   };
 }

@@ -22,13 +22,41 @@ export function setNetworkPreference(network: StellarNetwork): void {
   localStorage.setItem(NETWORK_KEY, network);
 }
 
+// ── chain preference (Stellar ↔ BotChain) ──
+//
+// Which chain the wallet is currently operating on. One passkey derives a
+// deterministic address per chain (Stellar G-address via Ed25519, BotChain
+// 0x-address via secp256k1), so switching chains never needs a new passkey —
+// just a re-derivation. Persisted client-side like the network preference.
+
+const CHAIN_KEY = 'orbi_chain';
+
+export type Chain = 'stellar' | 'botchain';
+
+export function getChainPreference(): Chain {
+  if (typeof window === 'undefined') return 'stellar';
+  const stored = localStorage.getItem(CHAIN_KEY);
+  return stored === 'botchain' || stored === 'stellar' ? stored : 'stellar';
+}
+
+export function setChainPreference(chain: Chain): void {
+  localStorage.setItem(CHAIN_KEY, chain);
+}
+
 const WALLET_KEY = 'orbi_wallet';
 
 export interface StoredWallet {
+  // The active chain's address. Kept as the primary field so every existing
+  // (Stellar) page keeps working unchanged when chain === 'stellar'.
   walletAddress: string;
   credentialId: string;
   passkeyId: string;
   walletType?: 'smart' | 'prf-g';
+  // Which chain `walletAddress` belongs to. Absent ⇒ legacy Stellar wallet.
+  chain?: Chain;
+  // All per-chain addresses derived from this passkey so far, so switching
+  // chains can show the right address without forcing a re-derive.
+  addresses?: Partial<Record<Chain, string>>;
 }
 
 const SESSION_COOKIE = 'orbi_session';
@@ -47,6 +75,21 @@ export function loadWallet(): StoredWallet | null {
 export function clearWallet(): void {
   localStorage.removeItem(WALLET_KEY);
   document.cookie = `${SESSION_COOKIE}=; path=/; max-age=0`;
+}
+
+// Make `chain` the active chain: point walletAddress at its derived address,
+// remember the address in the per-chain map, and persist the chain preference.
+// Used by the create / sign-in flows once an address has been derived.
+export function activateChain(wallet: StoredWallet, chain: Chain, address: string): StoredWallet {
+  const next: StoredWallet = {
+    ...wallet,
+    walletAddress: address,
+    chain,
+    addresses: { ...wallet.addresses, [chain]: address },
+  };
+  saveWallet(next);
+  setChainPreference(chain);
+  return next;
 }
 
 // ── dApp connections (local — not synced across devices) ──

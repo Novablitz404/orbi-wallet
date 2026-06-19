@@ -9,7 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@orbi-wallet/sdk": "^0.1.0",
+    "@orbi-wallet/sdk": "^0.1.1",
     "@simplewebauthn/browser": "^13.3.0",
     "@stellar/stellar-base": "^15.0.0",
     "@vercel/analytics": "^2.0.1",
@@ -19,7 +19,8 @@
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-loading-skeleton": "^3.5.0"
+    "react-loading-skeleton": "^3.5.0",
+    "viem": "^2.52.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import BackButton from '../../components/BackButton';
-import { saveWallet, loadWallet, getNetworkPreference } from '../../lib/storage';
+import ChainSelector from '../../components/ChainSelector';
+import { saveWallet, loadWallet, getNetworkPreference, setChainPreference, getChainPreference, type Chain, type StoredWallet } from '../../lib/storage';
 import { signInWithPRF } from '../../lib/prf-wallet';
 
 const HORIZON_URL = getNetworkPreference() === 'mainnet'
@@ -15,28 +16,41 @@ export default function SignInPage() {
   const router = useRouter();
   const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle');
   const [error, setError] = useState('');
+  const [chain, setChain] = useState<Chain>('stellar');
+
+  useEffect(() => {
+    const c = new URLSearchParams(window.location.search).get('chain');
+    setChain(c === 'botchain' || c === 'stellar' ? c : getChainPreference());
+  }, []);
 
   async function handleSignIn() {
     setStatus('loading');
     setError('');
     try {
       const stored = loadWallet();
-      const { gAddress, credentialId } = await signInWithPRF(stored?.credentialId);
+      const { gAddress, evmAddress, credentialId } = await signInWithPRF(stored?.credentialId);
+      const address = chain === 'stellar' ? gAddress : evmAddress;
 
-      if (stored) {
-        if (gAddress !== stored.walletAddress) {
-          throw new Error('Passkey does not match your wallet address');
-        }
-        saveWallet({ ...stored, credentialId });
-        router.replace('/dashboard');
-        return;
+      // On Stellar a new device must verify the account is actually activated
+      // on-chain before adopting it. On BotChain the 0x address always exists
+      // (no activation), so it's adopted directly — the passkey deterministically
+      // re-derives the same address.
+      if (!stored && chain === 'stellar') {
+        const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
+        if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
       }
 
-      // New device — verify this G address is activated on Stellar before adopting it.
-      const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
-      if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
-      saveWallet({ walletAddress: gAddress, credentialId, passkeyId: '', walletType: 'prf-g' });
-      router.replace('/dashboard');
+      const wallet: StoredWallet = {
+        walletAddress: address,
+        credentialId,
+        passkeyId: '',
+        walletType: 'prf-g',
+        chain,
+        addresses: { stellar: gAddress, botchain: evmAddress },
+      };
+      saveWallet(wallet);
+      setChainPreference(chain);
+      router.replace(chain === 'botchain' ? '/evm' : '/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign in failed');
       setStatus('error');
@@ -58,6 +72,8 @@ export default function SignInPage() {
       </div>
 
       <div className="w-full max-w-sm flex flex-col gap-4">
+        <ChainSelector value={chain} onChange={setChain} disabled={status === 'loading'} />
+
         <button
           onClick={handleSignIn}
           disabled={status === 'loading'}

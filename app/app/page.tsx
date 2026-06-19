@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { OrbiClient } from '@orbi-wallet/sdk';
-import { getNetworkPreference } from '../lib/storage';
+import ChainPickerModal from '../components/ChainPickerModal';
+import { getNetworkPreference, type Chain } from '../lib/storage';
 
 const NETWORK = getNetworkPreference();
 const orbi = new OrbiClient({ network: NETWORK });
@@ -13,19 +14,23 @@ export default function Home() {
   const router = useRouter();
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
 
-  // Returning visitor — the SDK already has a cached session on this origin,
-  // so skip straight to the dashboard with no popup.
+  // Returning visitor — skip the picker and go to the dashboard for whichever
+  // chain the cached SDK session is on.
   useEffect(() => {
-    if (orbi.getAddress()) router.replace('/dashboard');
+    if (orbi.getAddress()) router.replace(orbi.getChain() === 'botchain' ? '/evm' : '/dashboard');
   }, [router]);
 
-  async function handleConnect() {
-    setConnecting(true);
+  async function handlePick(chain: Chain) {
+    setPickerOpen(false);
     setError('');
+    setConnecting(true);
     try {
-      await orbi.connect();
-      router.replace('/dashboard');
+      // Both chains derive/sign on keys.orbiwallet.xyz (where the passkey
+      // lives), via the same SDK popup handshake — just a different chain param.
+      await orbi.connect({ chain });
+      router.replace(chain === 'botchain' ? '/evm' : '/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Connection failed');
       setConnecting(false);
@@ -44,7 +49,7 @@ export default function Home() {
 
       <div className="w-full max-w-sm flex flex-col gap-4">
         <button
-          onClick={handleConnect}
+          onClick={() => setPickerOpen(true)}
           disabled={connecting}
           className="w-full py-4 rounded-2xl bg-white hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-semibold transition-colors flex items-center justify-center gap-2"
         >
@@ -63,6 +68,8 @@ export default function Home() {
 
         {error && <p className="text-red-400 text-sm text-center">{error}</p>}
       </div>
+
+      <ChainPickerModal open={pickerOpen} onPick={handlePick} onClose={() => setPickerOpen(false)} />
     </main>
   );
 }
