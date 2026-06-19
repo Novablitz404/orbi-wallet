@@ -63,8 +63,10 @@ export default function ConnectPage() {
 
     if (o) addConnection(w.walletAddress, o, name);
 
-    // BroadcastChannel + postMessage handshake — see OrbiClient.connect()
-    const msg = { type: 'orbi_connected', address: w.walletAddress, credentialId: w.credentialId, passkeyId: w.passkeyId, chain: w.chain ?? 'stellar' };
+    // BroadcastChannel + postMessage handshake — see OrbiClient.connect().
+    // Includes both per-chain addresses so the dApp can switch chains later
+    // without re-prompting.
+    const msg = { type: 'orbi_connected', address: w.walletAddress, credentialId: w.credentialId, passkeyId: w.passkeyId, chain: w.chain ?? 'stellar', addresses: w.addresses ?? {} };
     if (c) {
       const bc = new BroadcastChannel(c);
       bc.postMessage(msg);

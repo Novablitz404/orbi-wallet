@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { formatEther } from 'viem';
 import { OrbiClient } from '@orbi-wallet/sdk';
-import { getNetworkPreference, type StellarNetwork } from '../../lib/storage';
+import { getNetworkPreference, setNetworkPreference, type StellarNetwork } from '../../lib/storage';
 import { getEvmBalance } from '../../lib/evm-wallet';
 import { botchain } from '../../lib/chains';
 
@@ -24,6 +24,7 @@ export default function BotChainDashboard({ onSwitchChain }: { onSwitchChain: ()
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [networkMenuOpen, setNetworkMenuOpen] = useState(false);
 
   useEffect(() => {
     if (orbi.getAddress() && orbi.getChain() === 'botchain') {
@@ -89,7 +90,37 @@ export default function BotChainDashboard({ onSwitchChain }: { onSwitchChain: ()
           <div className="flex items-center gap-2">
             <Image src="/Orbi Icon.png" alt="Orbi" width={32} height={32} className="w-8 h-8 rounded-xl" priority />
             <span className="font-semibold">BOT Chain</span>
-            <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-400 capitalize">{network}</span>
+            <div className="relative">
+              <button
+                onClick={() => setNetworkMenuOpen(o => !o)}
+                title="Switch network — reloads the app"
+                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 capitalize"
+              >
+                {network}
+                <svg className={`w-3 h-3 transition-transform ${networkMenuOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              {networkMenuOpen && (
+                <div className="absolute left-0 top-full mt-2 w-28 bg-slate-900 border border-slate-700/50 rounded-xl shadow-2xl shadow-black/50 overflow-hidden z-50">
+                  {(['mainnet', 'testnet'] as const).map(net => (
+                    <button
+                      key={net}
+                      onClick={() => {
+                        setNetworkMenuOpen(false);
+                        if (net === network) return;
+                        setNetworkPreference(net);
+                        window.location.reload();
+                      }}
+                      className={`flex items-center justify-between w-full px-3 py-2.5 text-sm transition-colors ${net === network ? 'text-white bg-slate-800' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'}`}
+                    >
+                      {net === 'mainnet' ? 'Mainnet' : 'Testnet'}
+                      {net === network && (
+                        <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <button onClick={onSwitchChain} className="text-xs text-slate-400 hover:text-white">Switch to Stellar</button>
