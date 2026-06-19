@@ -158,14 +158,19 @@ export async function sendEvmTransaction(
   });
 }
 
-/** Sign an arbitrary message (EIP-191 / personal_sign). Used for dApp login (SIWE). */
+/**
+ * Sign an arbitrary message (EIP-191 / personal_sign). Used for dApp login
+ * (SIWE). A 0x-prefixed message is treated as raw bytes (how personal_sign
+ * delivers it over EIP-1193); anything else is signed as a UTF-8 string.
+ */
 export async function signEvmMessage(
   credentialId: string,
   message: string,
   expectedAddress: string,
 ): Promise<Hex> {
+  const payload = /^0x[0-9a-fA-F]*$/.test(message) ? { raw: message as Hex } : message;
   return withEvmAccount(credentialId, expectedAddress, (account) =>
-    account.signMessage({ message }),
+    account.signMessage({ message: payload }),
   );
 }
 
