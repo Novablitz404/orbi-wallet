@@ -1,4 +1,5 @@
 import { Keypair, TransactionBuilder, Networks } from '@stellar/stellar-base';
+import { decode as cborDecode, Decoder, Encoder } from 'cbor-x';
 import { deriveEvmAddressFromPrf } from './evm-wallet';
 
 // Salt used for PRF evaluation — must never change (changing it changes the derived G address).
@@ -34,16 +35,54 @@ function fromBase64url(b64: string): Uint8Array {
 
 export interface PRFWalletCredential {
   credentialId: string; // base64url
+  publicKey: string;    // base64url COSE public key (for server-side assertion verification / recovery)
   gAddress: string;     // G... Stellar address
   evmAddress: string;   // 0x… BotChain/EVM address (same passkey, secp256k1)
 }
 
+// Pull the COSE public key out of a registration attestationObject so the
+// recovery server can verify future assertions. Decodes the first CBOR item
+// after the credential id (re-encoding drops any trailing authenticator
+// extension data, e.g. hmac-secret used by PRF).
+function extractCosePublicKey(attestationObject: ArrayBuffer): Uint8Array {
+  const att = cborDecode(new Uint8Array(attestationObject)) as { authData: Uint8Array };
+  const authData = att.authData;
+  const dv = new DataView(authData.buffer, authData.byteOffset, authData.byteLength);
+  // rpIdHash(32) + flags(1) + signCount(4) + aaguid(16) = 53, then credIdLen(2).
+  const credIdLen = dv.getUint16(53, false);
+  const coseStart = 55 + credIdLen;
+  const coseAndMaybeExt = authData.subarray(coseStart);
+  // Decode the COSE map preserving its INTEGER keys (mapsAsObjects would turn
+  // them into text keys, producing invalid COSE), then re-encode the Map to drop
+  // any trailing authenticator extension data.
+  const cose = new Decoder({ mapsAsObjects: false }).decode(coseAndMaybeExt);
+  return new Uint8Array(new Encoder().encode(cose));
+}
+
 /**
- * Register a new PRF-based G wallet.
- * Creates a passkey with PRF extension, derives an Ed25519 seed via HKDF,
- * and returns the G address (public key). The private key never leaves memory.
+ * Derive the public Stellar + EVM addresses from a raw PRF output. Used to
+ * verify a reconstructed wallet (recovery) matches the expected addresses.
  */
-export async function registerPRFWallet(): Promise<PRFWalletCredential> {
+export async function addressesFromPrfOutput(prfOutput: Uint8Array): Promise<{ gAddress: string; evmAddress: string }> {
+  const seed = await hkdfDerive(prfOutput);
+  const gAddress = Keypair.fromRawEd25519Seed(Buffer.from(seed)).publicKey();
+  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
+  seed.fill(0);
+  return { gAddress, evmAddress };
+}
+
+// Result of creating a PRF credential, INCLUDING the raw PRF output. The PRF
+// output is the master seed (it derives both chains); callers that don't need it
+// — like registerPRFWallet — must zero it. Recovery enrollment needs it to split.
+export interface PRFCredentialWithSeed extends PRFWalletCredential {
+  prfOutput: Uint8Array;
+}
+
+/**
+ * Register a new PRF-based wallet and return the credential plus the raw PRF
+ * output (the master seed). Caller owns zeroing `prfOutput`.
+ */
+export async function createPRFCredential(): Promise<PRFCredentialWithSeed> {
   const credential = await navigator.credentials.create({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -89,14 +128,30 @@ export async function registerPRFWallet(): Promise<PRFWalletCredential> {
   // output, so picking BotChain at creation doesn't need a second tap.
   const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
 
-  seed.fill(0);
-  prfOutput.fill(0);
+  const publicKey = toBase64url(
+    extractCosePublicKey((credential.response as AuthenticatorAttestationResponse).attestationObject),
+  );
 
+  seed.fill(0);
+
+  // NOTE: prfOutput is NOT zeroed here — it's the master seed the caller needs
+  // (e.g. recovery enrollment). registerPRFWallet zeroes it.
   return {
     credentialId: toBase64url(new Uint8Array(credential.rawId)),
+    publicKey,
     gAddress,
     evmAddress,
+    prfOutput,
   };
+}
+
+/**
+ * Register a new PRF-based wallet (public surface). Zeroes the PRF output.
+ */
+export async function registerPRFWallet(): Promise<PRFWalletCredential> {
+  const { prfOutput, ...cred } = await createPRFCredential();
+  prfOutput.fill(0);
+  return cred;
 }
 
 /**

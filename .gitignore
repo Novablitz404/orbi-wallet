@@ -1,2 +1,4 @@
 node_modules/
 .DS_Store
+# Stray Next.js build output (the app builds inside app/)
+.next/

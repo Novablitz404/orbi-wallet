@@ -16,14 +16,17 @@
     "@vercel/speed-insights": "^2.0.0",
     "buffer": "^6.0.3",
     "cbor-x": "^1.6.4",
+    "libsodium-wrappers": "^0.8.4",
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-loading-skeleton": "^3.5.0",
+    "shamir-secret-sharing": "^0.0.4",
     "viem": "^2.52.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/libsodium-wrappers": "^0.7.14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
