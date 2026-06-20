@@ -14,6 +14,8 @@ import { createPRFCredential } from '../../../lib/prf-wallet';
 import {
   enrollRecovery,
   reconstructViaPasskey,
+  linkGoogleAndBackup,
+  reconstructViaGoogle,
   verifyRecovered,
   type EnrollResult,
 } from '../../../lib/recovery';
@@ -88,6 +90,43 @@ export default function RecoveryDevPage() {
     }
   }
 
+  async function linkGoogle() {
+    if (!enrolled) return;
+    setBusy(true);
+    try {
+      say('Linking Google + backing up B to Drive (Google sign-in, then passkey, then Drive grant)…');
+      await linkGoogleAndBackup({
+        userId: enrolled.userId,
+        credentialId: enrolled.credentialId,
+        encryptedB: enrolled.encryptedB,
+      });
+      say('✓ Google linked and encrypted B written to Drive appDataFolder.');
+    } catch (e) {
+      say(`✗ ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reconstructGoogle() {
+    if (!enrolled) return;
+    setBusy(true);
+    try {
+      say('Reconstructing via Google (NO passkey) → Drive B + server release → combine…');
+      const prfOutput = await reconstructViaGoogle();
+      const ok = await verifyRecovered(prfOutput, {
+        gAddress: enrolled.gAddress,
+        evmAddress: enrolled.evmAddress,
+      });
+      prfOutput.fill(0);
+      say(ok ? '✓✓ RECOVERED via Google — seed matches the wallet addresses.' : '✗ recovered seed does NOT match (bug).');
+    } catch (e) {
+      say(`✗ ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main style={{ maxWidth: 640, margin: '40px auto', padding: 24, fontFamily: 'system-ui', color: '#e2e8f0' }}>
       <h1 style={{ fontSize: 20 }}>Recovery loop (dev)</h1>
@@ -102,6 +141,16 @@ export default function RecoveryDevPage() {
         <button onClick={reconstruct} disabled={busy || !enrolled}
           style={{ padding: '10px 14px', borderRadius: 10, background: '#16a34a', color: '#fff', border: 0, cursor: enrolled ? 'pointer' : 'not-allowed', opacity: enrolled ? 1 : 0.5 }}>
           2. Reconstruct via passkey
+        </button>
+      </div>
+      <div style={{ display: 'flex', gap: 10, margin: '0 0 16px' }}>
+        <button onClick={linkGoogle} disabled={busy || !enrolled}
+          style={{ padding: '10px 14px', borderRadius: 10, background: '#7c3aed', color: '#fff', border: 0, cursor: enrolled ? 'pointer' : 'not-allowed', opacity: enrolled ? 1 : 0.5 }}>
+          3. Link Google + back up B
+        </button>
+        <button onClick={reconstructGoogle} disabled={busy || !enrolled}
+          style={{ padding: '10px 14px', borderRadius: 10, background: '#0891b2', color: '#fff', border: 0, cursor: enrolled ? 'pointer' : 'not-allowed', opacity: enrolled ? 1 : 0.5 }}>
+          4. Reconstruct via Google (no passkey)
         </button>
       </div>
       <pre style={{ background: '#0b1424', border: '1px solid #1e293b', borderRadius: 12, padding: 14, fontSize: 12, whiteSpace: 'pre-wrap', minHeight: 160 }}>

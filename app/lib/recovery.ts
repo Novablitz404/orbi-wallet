@@ -18,6 +18,11 @@ import { split, combine } from 'shamir-secret-sharing';
 import _sodium from 'libsodium-wrappers';
 import { startAuthentication } from '@simplewebauthn/browser';
 import { addressesFromPrfOutput } from './prf-wallet';
+import { requestGoogleIdToken, requestDriveAccessToken } from './google-oauth';
+import { writeAppData, readAppData } from './drive';
+
+// One wallet per Google account (for now): a fixed appDataFolder filename for B.
+const SHARE_B_FILE = 'orbi-recovery-share.json';
 
 const RECOVERY_SERVER_URL =
   process.env.NEXT_PUBLIC_RECOVERY_SERVER_URL ?? 'http://localhost:8080';
@@ -196,4 +201,91 @@ export async function verifyRecovered(
     got.gAddress === expected.gAddress &&
     got.evmAddress.toLowerCase() === expected.evmAddress.toLowerCase()
   );
+}
+
+// ── 9.2: Google sign-in + Drive share B ──────────────────────────────────────
+
+// Single-use challenge + passkey assertion (shared by link + passkey paths).
+async function passkeyAssertion(userId: string, credentialId: string) {
+  const chRes = await fetch(`${RECOVERY_SERVER_URL}/v1/challenge`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ user_id: userId }),
+  });
+  if (!chRes.ok) throw new Error(`challenge failed: ${chRes.status}`);
+  const { nonce } = (await chRes.json()) as { nonce: string };
+  return startAuthentication({
+    optionsJSON: {
+      challenge: nonce,
+      rpId: getRpId(),
+      allowCredentials: [{ id: credentialId, type: 'public-key' }],
+      userVerification: 'required',
+    },
+  });
+}
+
+/**
+ * Link a Google account to the wallet (passkey-authorized) and back up the
+ * encrypted Cloud share B to the user's Drive. Enables the no-passkey path.
+ */
+export async function linkGoogleAndBackup(opts: {
+  userId: string;
+  credentialId: string;
+  encryptedB: EncryptedBlob;
+}): Promise<void> {
+  // 1. Identity token (no API scope) + passkey assertion authorize the link.
+  const idToken = await requestGoogleIdToken();
+  const assertion = await passkeyAssertion(opts.userId, opts.credentialId);
+  const linkRes = await fetch(`${RECOVERY_SERVER_URL}/v1/link/google`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ user_id: opts.userId, assertion, google_id_token: idToken }),
+  });
+  if (!linkRes.ok) throw new Error(`link/google failed: ${linkRes.status}`);
+
+  // 2. Drive token stays in the browser; write encrypted B to appDataFolder.
+  const driveToken = await requestDriveAccessToken();
+  await writeAppData(driveToken, SHARE_B_FILE, JSON.stringify(opts.encryptedB));
+}
+
+/**
+ * Reconstruct the seed with NO passkey: Google sign-in releases the Server share
+ * + K_B; the browser-held Drive token fetches B. Returns the recovered PRF output.
+ */
+export async function reconstructViaGoogle(): Promise<Uint8Array> {
+  // 1. Drive token (browser-only) → fetch encrypted B.
+  const driveToken = await requestDriveAccessToken();
+  const raw = await readAppData(driveToken, SHARE_B_FILE);
+  if (!raw) throw new Error('no Drive backup found for this Google account');
+  const encryptedB = JSON.parse(raw) as EncryptedBlob;
+
+  // 2. ID token → server release (server maps google_sub → wallet).
+  const idToken = await requestGoogleIdToken();
+  const s = await sodium();
+  const eph = s.crypto_box_keypair();
+  try {
+    const relRes = await fetch(`${RECOVERY_SERVER_URL}/v1/release/google`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ google_id_token: idToken, client_ephemeral_pubkey: toB64(eph.publicKey) }),
+    });
+    if (!relRes.ok) throw new Error(`release/google failed: ${relRes.status}`);
+    const { server_share_sealed, kb_sealed } = (await relRes.json()) as {
+      server_share_sealed: string;
+      kb_sealed: string;
+    };
+
+    const serverShare = s.crypto_box_seal_open(fromB64(server_share_sealed), eph.publicKey, eph.privateKey);
+    const kbKey = s.crypto_box_seal_open(fromB64(kb_sealed), eph.publicKey, eph.privateKey);
+    const cloudB = await aesGcmDecrypt(kbKey, encryptedB);
+    try {
+      return await combine([serverShare, cloudB]);
+    } finally {
+      serverShare.fill(0);
+      kbKey.fill(0);
+      cloudB.fill(0);
+    }
+  } finally {
+    eph.privateKey.fill(0);
+  }
 }
