@@ -80,6 +80,23 @@ export function loadWallet(): StoredWallet | null {
   return raw ? JSON.parse(raw) : null;
 }
 
+// The SDK session mirror (orbi_session). On the main app origin (e.g.
+// account.orbiwallet.xyz) the full StoredWallet is never written — only this
+// session — so it's the only place to recover the credentialId there.
+export interface SdkSession {
+  walletAddress: string;
+  credentialId?: string;
+  passkeyId?: string;
+  chain?: Chain;
+  addresses?: Partial<Record<Chain, string>>;
+}
+
+export function getSdkSession(): SdkSession | null {
+  if (typeof window === 'undefined') return null;
+  const raw = localStorage.getItem(SDK_SESSION_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
+
 export function clearWallet(): void {
   localStorage.removeItem(WALLET_KEY);
   localStorage.removeItem(SDK_SESSION_KEY);

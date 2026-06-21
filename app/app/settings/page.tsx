@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getConnections, removeConnection, getNetworkPreference, loadWallet, setWalletRecovery, type StoredConnection, type StoredWallet } from '../../lib/storage';
-import { setupRecoveryWithGoogle } from '../../lib/recovery';
+import { getConnections, removeConnection, getNetworkPreference, loadWallet, getSdkSession, setWalletRecovery, type StoredConnection, type StoredWallet } from '../../lib/storage';
+import { setupRecoveryWithGoogle, fetchRecoveryStatus } from '../../lib/recovery';
 import { prewarmGoogleAuth } from '../../lib/google-oauth';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import BackButton from '../../components/BackButton';
@@ -12,11 +12,16 @@ const NETWORK = getNetworkPreference();
 const NETWORK_LABEL = NETWORK === 'mainnet' ? 'Stellar Mainnet' : 'Stellar Testnet';
 const orbi = new OrbiClient({ network: NETWORK });
 
+// Recovery setup needs the PRF seed, which only exists on the keys (RP) origin.
+// On the main app origin we send the user there to enable it.
+const KEYS_SETTINGS_URL = 'https://keys.orbiwallet.xyz/settings';
+
 export default function SettingsPage() {
   const router = useRouter();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [connections, setConnections] = useState<StoredConnection[]>([]);
   const [wallet, setWallet] = useState<StoredWallet | null>(null);
+  const [googleLinked, setGoogleLinked] = useState(false);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [recoveryError, setRecoveryError] = useState('');
 
@@ -25,8 +30,19 @@ export default function SettingsPage() {
     if (!addr) { router.replace('/'); return; }
     setWalletAddress(addr);
     setConnections(getConnections(addr));
-    setWallet(loadWallet());
+    const w = loadWallet();
+    setWallet(w);
     prewarmGoogleAuth();
+
+    // Recovery state lives on the server, not the device. On the main app origin
+    // the full wallet (with publicKey/recovery) isn't stored — only the SDK
+    // session — so ask the server whether this wallet is already protected.
+    if (w?.recovery?.googleLinked) {
+      setGoogleLinked(true);
+    } else {
+      const cred = w?.credentialId ?? getSdkSession()?.credentialId;
+      if (cred) fetchRecoveryStatus(cred).then(s => { if (s.googleLinked) setGoogleLinked(true); });
+    }
   }, [router]);
 
   function revoke(origin: string) {
@@ -36,7 +52,13 @@ export default function SettingsPage() {
   }
 
   async function setupRecovery() {
-    if (!wallet?.publicKey || !wallet.walletAddress) return;
+    // Setup needs the PRF seed, which only exists on the keys (RP) origin. When
+    // the public key isn't stored locally we're on the main app origin — the
+    // assertion would fail here — so send the user to keys to enable recovery.
+    if (!wallet?.publicKey || !wallet.walletAddress) {
+      window.location.href = KEYS_SETTINGS_URL;
+      return;
+    }
     setRecoveryError('');
     setRecoveryBusy(true);
     try {
@@ -47,6 +69,7 @@ export default function SettingsPage() {
         userId: wallet.recovery?.userId,
       });
       setWalletRecovery({ userId, googleLinked: true });
+      setGoogleLinked(true);
       setWallet(loadWallet());
     } catch (err: unknown) {
       setRecoveryError(err instanceof Error ? err.message : 'Could not set up recovery');
@@ -74,7 +97,7 @@ export default function SettingsPage() {
       <div className="mb-4">
         <h2 className="text-slate-400 text-sm font-medium mb-2 px-1">Recovery</h2>
         <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-4">
-          {wallet?.recovery?.googleLinked ? (
+          {googleLinked ? (
             <div className="flex items-start gap-3">
               <span className="text-green-400 text-lg leading-none mt-0.5">✓</span>
               <div>
@@ -85,7 +108,7 @@ export default function SettingsPage() {
                 </p>
               </div>
             </div>
-          ) : wallet?.publicKey ? (
+          ) : (
             <div className="flex flex-col gap-3">
               <div>
                 <p className="text-white text-sm font-medium">Set up wallet recovery</p>
@@ -103,10 +126,6 @@ export default function SettingsPage() {
                 {recoveryBusy ? 'Setting up… check the prompts' : 'Set up recovery with Google'}
               </button>
             </div>
-          ) : (
-            <p className="text-slate-500 text-sm">
-              Recovery isn&apos;t available for this wallet. Re-create your wallet to enable it.
-            </p>
           )}
         </div>
       </div>
