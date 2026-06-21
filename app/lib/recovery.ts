@@ -79,6 +79,45 @@ export interface EnrollResult {
 }
 
 /**
+/**
+ * Recovery state for a wallet, fetched from the server by passkey credential id.
+ * Lets a re-adopted device (local storage cleared on sign-out) restore the COSE
+ * public key + enrollment flags it can't re-derive from a passkey assertion.
+ * Best-effort: returns a not-enrolled result if the server is unreachable.
+ */
+export interface RecoveryStatus {
+  enrolled: boolean;
+  googleLinked: boolean;
+  publicKey?: string; // base64url COSE key
+  userId?: string;
+}
+
+export async function fetchRecoveryStatus(credentialId: string): Promise<RecoveryStatus> {
+  try {
+    const res = await fetch(`${RECOVERY_SERVER_URL}/v1/wallet/status`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credential_id: credentialId }),
+    });
+    if (!res.ok) return { enrolled: false, googleLinked: false };
+    const d = (await res.json()) as {
+      enrolled?: boolean;
+      google_linked?: boolean;
+      public_key?: string;
+      user_id?: string;
+    };
+    return {
+      enrolled: !!d.enrolled,
+      googleLinked: !!d.google_linked,
+      publicKey: d.public_key,
+      userId: d.user_id,
+    };
+  } catch {
+    return { enrolled: false, googleLinked: false };
+  }
+}
+
+/**
  * Split the master seed, store the Server share + K_B on the recovery server,
  * and return the encrypted Cloud share B for Drive storage.
  */

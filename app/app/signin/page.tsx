@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import BackButton from '../../components/BackButton';
 import { saveWallet, loadWallet, setSdkSession, type StoredWallet } from '../../lib/storage';
 import { signInWithPRF } from '../../lib/prf-wallet';
-import { recoverAndAdoptViaGoogle } from '../../lib/recovery';
+import { recoverAndAdoptViaGoogle, fetchRecoveryStatus } from '../../lib/recovery';
 
 export default function SignInPage() {
   const router = useRouter();
@@ -25,10 +25,15 @@ export default function SignInPage() {
       // the user's wallet, funded or not. Don't gate sign-in on a Horizon lookup:
       // an unfunded (404) account is still valid and gating it locked users out.
 
+      // Restore recovery state (public key + enrollment) from the server when the
+      // local copy is gone — a passkey assertion can't re-derive the COSE key, so
+      // a re-adopted wallet (storage cleared on sign-out) would otherwise show
+      // "recovery unavailable" despite already being enrolled. Best-effort.
+      const status = !stored?.publicKey || !stored?.recovery
+        ? await fetchRecoveryStatus(credentialId)
+        : null;
+
       const wallet: StoredWallet = {
-        // Preserve recovery state captured at registration — a passkey
-        // assertion can't re-derive the COSE public key, so dropping these
-        // would silently disable recovery on every sign-in.
         ...stored,
         walletAddress: gAddress,
         credentialId,
@@ -36,6 +41,10 @@ export default function SignInPage() {
         walletType: 'prf-g',
         chain: 'stellar',
         addresses: { stellar: gAddress },
+        publicKey: stored?.publicKey ?? status?.publicKey,
+        recovery: stored?.recovery ?? (status?.googleLinked
+          ? { userId: status.userId ?? '', googleLinked: true }
+          : undefined),
       };
       saveWallet(wallet);
       setSdkSession(wallet);

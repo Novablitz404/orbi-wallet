@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { signInWithPRF } from '../../lib/prf-wallet';
+import { fetchRecoveryStatus } from '../../lib/recovery';
 import { loadWallet, saveWallet, setSdkSession, addConnection, type StoredWallet } from '../../lib/storage';
 
 type Step = 'loading' | 'connect' | 'connecting' | 'done' | 'error';
@@ -81,10 +82,14 @@ export default function ConnectPage() {
       // must NOT gate sign-in on a Horizon lookup: an unfunded (404) wallet is
       // still valid, and gating it locked users out after a disconnect.
 
+      // Restore recovery state from the server when the local copy is gone (a
+      // passkey assertion can't re-derive the COSE key), so a re-adopted wallet
+      // keeps its recovery instead of looking unprotected. Best-effort.
+      const status = !stored?.publicKey || !stored?.recovery
+        ? await fetchRecoveryStatus(credentialId)
+        : null;
+
       const w: StoredWallet = {
-        // Preserve recovery state (publicKey/recovery) — a passkey assertion
-        // can't re-derive the COSE public key, so rebuilding from scratch would
-        // silently disable recovery, matching the bug fixed in signin.
         ...stored,
         walletAddress: gAddress,
         credentialId,
@@ -92,6 +97,10 @@ export default function ConnectPage() {
         walletType: 'prf-g',
         chain: 'stellar',
         addresses: { stellar: gAddress },
+        publicKey: stored?.publicKey ?? status?.publicKey,
+        recovery: stored?.recovery ?? (status?.googleLinked
+          ? { userId: status.userId ?? '', googleLinked: true }
+          : undefined),
       };
       saveWallet(w);
 
