@@ -4,13 +4,9 @@ import { useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import BackButton from '../../components/BackButton';
-import { saveWallet, loadWallet, getNetworkPreference, setSdkSession, type StoredWallet } from '../../lib/storage';
+import { saveWallet, loadWallet, setSdkSession, type StoredWallet } from '../../lib/storage';
 import { signInWithPRF } from '../../lib/prf-wallet';
 import { recoverAndAdoptViaGoogle } from '../../lib/recovery';
-
-const HORIZON_URL = getNetworkPreference() === 'mainnet'
-  ? 'https://horizon.stellar.org'
-  : 'https://horizon-testnet.stellar.org';
 
 export default function SignInPage() {
   const router = useRouter();
@@ -25,10 +21,9 @@ export default function SignInPage() {
       const stored = loadWallet();
       const { gAddress, credentialId } = await signInWithPRF(stored?.credentialId);
 
-      if (!stored) {
-        const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
-        if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
-      }
+      // The passkey + PRF deterministically derive exactly one G-address — it IS
+      // the user's wallet, funded or not. Don't gate sign-in on a Horizon lookup:
+      // an unfunded (404) account is still valid and gating it locked users out.
 
       const wallet: StoredWallet = {
         // Preserve recovery state captured at registration — a passkey
