@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Image from 'next/image';
+import RecoveryNudge from './RecoveryNudge';
 
 // Shared dashboard frame (sidebar, top bar, mobile header, account dropdown)
 // used by both the Stellar and EVM dashboards. Only the content differs per
@@ -159,6 +160,8 @@ export default function DashboardChrome({
         </div>
 
         <div className="px-6 md:px-10 py-6 pb-4 flex-1 overflow-y-auto md:overflow-visible min-h-0">
+          <RecoveryNudge />
+
           {headline}
 
           <div className="md:hidden flex gap-3 mb-6">
