@@ -19,6 +19,7 @@ import {
   verifyRecovered,
   type EnrollResult,
 } from '../../../lib/recovery';
+import { requestDriveAccessToken } from '../../../lib/google-oauth';
 
 interface Enrolled {
   userId: string;
@@ -91,10 +92,13 @@ export default function RecoveryDevPage() {
     setBusy(true);
     try {
       say('Linking Google + backing up B to Drive (Google sign-in, then passkey, then Drive grant)…');
+      // Drive token first, while the click's user activation is still fresh.
+      const driveToken = await requestDriveAccessToken();
       await linkGoogleAndBackup({
         userId: enrolled.userId,
         credentialId: enrolled.credentialId,
         encryptedB: enrolled.encryptedB,
+        driveToken,
       });
       say('✓ Google linked and encrypted B written to Drive appDataFolder.');
     } catch (e) {

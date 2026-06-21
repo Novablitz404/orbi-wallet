@@ -259,6 +259,7 @@ export async function linkGoogleAndBackup(opts: {
   userId: string;
   credentialId: string;
   encryptedB: EncryptedBlob;
+  driveToken: string;
 }): Promise<void> {
   // 1. Identity token (no API scope) + passkey assertion authorize the link.
   const idToken = await requestGoogleIdToken();
@@ -270,9 +271,9 @@ export async function linkGoogleAndBackup(opts: {
   });
   if (!linkRes.ok) throw new Error(`link/google failed: ${linkRes.status}`);
 
-  // 2. Drive token stays in the browser; write encrypted B to appDataFolder.
-  const driveToken = await requestDriveAccessToken();
-  await writeAppData(driveToken, SHARE_B_FILE, JSON.stringify(opts.encryptedB));
+  // 2. Drive token (acquired up-front by the caller while the click's user
+  //    activation was still fresh) stays in the browser; write B to appDataFolder.
+  await writeAppData(opts.driveToken, SHARE_B_FILE, JSON.stringify(opts.encryptedB));
 }
 
 /**
@@ -286,6 +287,11 @@ export async function setupRecoveryWithGoogle(opts: {
   stellarAddress: string;
   userId?: string;
 }): Promise<{ userId: string }> {
+  // Acquire the Drive access token FIRST, while the click's user activation is
+  // still fresh. The GIS token client opens a popup, and browsers block popups
+  // opened after the long passkey/enroll/link await chain ("Failed to open popup
+  // window"). Getting it up-front keeps the popup inside the user gesture.
+  const driveToken = await requestDriveAccessToken();
   const { prfOutput } = await getPrfOutputFromAssertion(opts.credentialId);
   try {
     const { userId, encryptedB } = await enrollRecovery({
@@ -295,7 +301,7 @@ export async function setupRecoveryWithGoogle(opts: {
       stellarAddress: opts.stellarAddress,
       userId: opts.userId,
     });
-    await linkGoogleAndBackup({ userId, credentialId: opts.credentialId, encryptedB });
+    await linkGoogleAndBackup({ userId, credentialId: opts.credentialId, encryptedB, driveToken });
     return { userId };
   } finally {
     prfOutput.fill(0);

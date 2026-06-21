@@ -6,6 +6,7 @@ import BackButton from '../../components/BackButton';
 import { saveWallet, loadWallet, setWalletRecovery, setSdkSession, type StoredWallet } from '../../lib/storage';
 import { registerPRFWallet, signInWithPRF } from '../../lib/prf-wallet';
 import { setupRecoveryWithGoogle } from '../../lib/recovery';
+import { prewarmGoogleAuth } from '../../lib/google-oauth';
 
 type Step = 'passkey' | 'protect' | 'done';
 
@@ -23,6 +24,7 @@ export default function CreateWalletPage() {
       setPopupMode(true);
       setChannelId(params.get('channelId') ?? '');
     }
+    prewarmGoogleAuth();
   }, []);
 
   const [error, setError] = useState('');

@@ -26,6 +26,13 @@ function loadGis(): Promise<void> {
   return gisPromise;
 }
 
+/** Warm up GIS (load the script) so the consent popup can open synchronously on
+ *  click, without a script-load await eating the user activation. Call on mount
+ *  of any page with a "Set up recovery" / Google button. Safe to call repeatedly. */
+export function prewarmGoogleAuth(): void {
+  void loadGis().catch(() => { /* surfaced later when the user actually clicks */ });
+}
+
 function clientId(): string {
   const id = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
   if (!id) throw new Error('NEXT_PUBLIC_GOOGLE_CLIENT_ID not set');

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getConnections, removeConnection, getNetworkPreference, loadWallet, setWalletRecovery, type StoredConnection, type StoredWallet } from '../../lib/storage';
 import { setupRecoveryWithGoogle } from '../../lib/recovery';
+import { prewarmGoogleAuth } from '../../lib/google-oauth';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import BackButton from '../../components/BackButton';
 
@@ -25,6 +26,7 @@ export default function SettingsPage() {
     setWalletAddress(addr);
     setConnections(getConnections(addr));
     setWallet(loadWallet());
+    prewarmGoogleAuth();
   }, [router]);
 
   function revoke(origin: string) {
