@@ -31,6 +31,10 @@ export default function SignInPage() {
       }
 
       const wallet: StoredWallet = {
+        // Preserve recovery state captured at registration — a passkey
+        // assertion can't re-derive the COSE public key, so dropping these
+        // would silently disable recovery on every sign-in.
+        ...stored,
         walletAddress: gAddress,
         credentialId,
         passkeyId: '',
