@@ -327,6 +327,24 @@ export default function StellarDashboard() {
       .catch(() => {});
   }, [router]);
 
+  // Keep balances current without a manual page refresh: re-fetch on a short
+  // interval and whenever the tab regains focus. This is what makes a freshly
+  // funded account or a just-received token appear on its own — the single
+  // mount fetch can land before Horizon has indexed the change. Only fires
+  // while the tab is visible, so a backgrounded dashboard isn't polling Horizon.
+  useEffect(() => {
+    if (!walletAddress) return;
+    const tick = () => { if (document.visibilityState === 'visible') refreshBalances(walletAddress); };
+    const id = setInterval(tick, 15000);
+    window.addEventListener('focus', tick);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', tick);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [walletAddress]);
+
   // Auto-dismiss after ~5s — except 'pending', which reflects an ongoing
   // operation and should stay until that operation resolves into one of these.
   useEffect(() => {
