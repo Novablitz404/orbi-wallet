@@ -9,7 +9,7 @@
 //
 // All signing / address derivation goes through resolveMasterPrf so both device
 // types behave identically. Self-contained (imports only storage) to avoid import
-// cycles with prf-wallet / evm-wallet.
+// cycles with prf-wallet.
 import { loadWallet } from './storage';
 
 const PRF_SALT = new TextEncoder().encode('orbi-stellar-v1'); // must match prf-wallet

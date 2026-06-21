@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { signInWithPRF } from '../../lib/prf-wallet';
-import { loadWallet, saveWallet, addConnection, getNetworkPreference, type Chain, type StoredWallet } from '../../lib/storage';
+import { loadWallet, saveWallet, addConnection, getNetworkPreference, type StoredWallet } from '../../lib/storage';
 
 const HORIZON_URL = getNetworkPreference() === 'mainnet'
   ? 'https://horizon.stellar.org'
@@ -16,14 +16,13 @@ export default function ConnectPage() {
   const [origin, setOrigin] = useState('');
   const [appName, setAppName] = useState('');
   const [channelId, setChannelId] = useState('');
-  const [chain, setChain] = useState<Chain>('stellar');
   const [walletAddress, setWalletAddress] = useState('');
   const [error, setError] = useState('');
 
   function handleCreateWallet() {
     const url = new URL(window.location.href);
     url.pathname = '/create';
-    // Keep origin + channelId + chain — create loops back here once the wallet
+    // Keep origin + channelId — create loops back here once the wallet
     // is ready so the connect handshake can complete on the right chain.
     window.location.href = url.toString();
   }
@@ -36,21 +35,15 @@ export default function ConnectPage() {
     const params = new URLSearchParams(window.location.search);
     const o = params.get('origin') ?? '';
     const c = params.get('channelId') ?? '';
-    const ch = params.get('chain');
-    const requested: Chain = ch === 'botchain' ? 'botchain' : 'stellar';
     setOrigin(o);
     setChannelId(c);
-    setChain(requested);
 
     let name = o;
     try { name = new URL(o).hostname; } catch { /* keep raw origin */ }
     setAppName(name);
 
-    // Already connected on this device on the *same* chain — auto-connect.
-    // A different-chain session needs a fresh passkey derivation, so it falls
-    // through to the approve screen instead.
     const existing = loadWallet();
-    if (existing && existing.chain === requested) {
+    if (existing) {
       grantAndSend(existing, o, c, name);
       return;
     }
@@ -64,9 +57,7 @@ export default function ConnectPage() {
     if (o) addConnection(w.walletAddress, o, name);
 
     // BroadcastChannel + postMessage handshake — see OrbiClient.connect().
-    // Includes both per-chain addresses so the dApp can switch chains later
-    // without re-prompting.
-    const msg = { type: 'orbi_connected', address: w.walletAddress, credentialId: w.credentialId, passkeyId: w.passkeyId, chain: w.chain ?? 'stellar', addresses: w.addresses ?? {} };
+    const msg = { type: 'orbi_connected', address: w.walletAddress, credentialId: w.credentialId, passkeyId: w.passkeyId, chain: 'stellar', addresses: { stellar: w.walletAddress } };
     if (c) {
       const bc = new BroadcastChannel(c);
       bc.postMessage(msg);
@@ -83,23 +74,20 @@ export default function ConnectPage() {
     setError('');
     try {
       const stored = loadWallet();
-      const { gAddress, evmAddress, credentialId } = await signInWithPRF(stored?.credentialId);
-      const address = chain === 'stellar' ? gAddress : evmAddress;
+      const { gAddress, credentialId } = await signInWithPRF(stored?.credentialId);
 
-      // Stellar requires an activated account before connecting on a fresh
-      // device; BotChain's 0x address always exists (no activation).
-      if (!stored && chain === 'stellar') {
+      if (!stored) {
         const res = await fetch(`${HORIZON_URL}/accounts/${gAddress}`);
         if (!res.ok) throw new Error('No wallet found for this passkey — create one first');
       }
 
       const w: StoredWallet = {
-        walletAddress: address,
+        walletAddress: gAddress,
         credentialId,
         passkeyId: '',
         walletType: 'prf-g',
-        chain,
-        addresses: { stellar: gAddress, botchain: evmAddress },
+        chain: 'stellar',
+        addresses: { stellar: gAddress },
       };
       saveWallet(w);
 
@@ -125,9 +113,7 @@ export default function ConnectPage() {
             <div className="text-center">
               <h1 className="text-xl font-bold text-white">Sign into {appName}</h1>
               <p className="text-slate-400 text-sm mt-1">By continuing, you allow {appName} to:</p>
-              <span className="inline-block mt-2 text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300">
-                {chain === 'botchain' ? 'BOT Chain' : 'Stellar'}
-              </span>
+              <span className="inline-block mt-2 text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300">Stellar</span>
             </div>
 
             <div className="w-full rounded-2xl bg-slate-800/50 border border-slate-700 p-4 flex flex-col gap-3">

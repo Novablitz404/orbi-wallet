@@ -25,7 +25,6 @@ interface Enrolled {
   credentialId: string;
   encryptedB: EnrollResult['encryptedB'];
   gAddress: string;
-  evmAddress: string;
 }
 
 export default function RecoveryDevPage() {
@@ -40,7 +39,7 @@ export default function RecoveryDevPage() {
     try {
       say('Creating passkey (PRF)…');
       const cred = await createPRFCredential();
-      say(`✓ passkey ${cred.credentialId.slice(0, 12)}…  G=${cred.gAddress.slice(0, 8)}…  ${cred.evmAddress.slice(0, 8)}…`);
+      say(`✓ passkey ${cred.credentialId.slice(0, 12)}…  G=${cred.gAddress.slice(0, 8)}…`);
 
       say('Splitting seed + enrolling Server share + K_B…');
       const res = await enrollRecovery({
@@ -48,7 +47,6 @@ export default function RecoveryDevPage() {
         credentialId: cred.credentialId,
         publicKey: cred.publicKey,
         stellarAddress: cred.gAddress,
-        evmAddress: cred.evmAddress,
       });
       cred.prfOutput.fill(0);
 
@@ -57,7 +55,6 @@ export default function RecoveryDevPage() {
         credentialId: cred.credentialId,
         encryptedB: res.encryptedB,
         gAddress: cred.gAddress,
-        evmAddress: cred.evmAddress,
       });
       say(`✓ enrolled user ${res.userId}. Encrypted B held locally (stands in for Drive).`);
     } catch (e) {
@@ -79,7 +76,6 @@ export default function RecoveryDevPage() {
       });
       const ok = await verifyRecovered(prfOutput, {
         gAddress: enrolled.gAddress,
-        evmAddress: enrolled.evmAddress,
       });
       prfOutput.fill(0);
       say(ok ? '✓✓ RECOVERED seed matches the wallet addresses.' : '✗ recovered seed does NOT match (bug).');
@@ -116,7 +112,6 @@ export default function RecoveryDevPage() {
       const prfOutput = await reconstructViaGoogle();
       const ok = await verifyRecovered(prfOutput, {
         gAddress: enrolled.gAddress,
-        evmAddress: enrolled.evmAddress,
       });
       prfOutput.fill(0);
       say(ok ? '✓✓ RECOVERED via Google — seed matches the wallet addresses.' : '✗ recovered seed does NOT match (bug).');

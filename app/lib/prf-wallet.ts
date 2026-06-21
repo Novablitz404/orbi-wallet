@@ -1,6 +1,5 @@
 import { Keypair, TransactionBuilder, Networks } from '@stellar/stellar-base';
 import { decode as cborDecode, Decoder, Encoder } from 'cbor-x';
-import { deriveEvmAddressFromPrf } from './evm-wallet';
 import { resolveMasterPrf } from './seed';
 
 // Salt used for PRF evaluation — must never change (changing it changes the derived G address).
@@ -38,7 +37,6 @@ export interface PRFWalletCredential {
   credentialId: string; // base64url
   publicKey: string;    // base64url COSE public key (for server-side assertion verification / recovery)
   gAddress: string;     // G... Stellar address
-  evmAddress: string;   // 0x… BotChain/EVM address (same passkey, secp256k1)
 }
 
 // Pull the COSE public key out of a registration attestationObject so the
@@ -61,19 +59,18 @@ function extractCosePublicKey(attestationObject: ArrayBuffer): Uint8Array {
 }
 
 /**
- * Derive the public Stellar + EVM addresses from a raw PRF output. Used to
- * verify a reconstructed wallet (recovery) matches the expected addresses.
+ * Derive the public Stellar address from a raw PRF output. Used to verify a
+ * reconstructed wallet (recovery) matches the expected address.
  */
-export async function addressesFromPrfOutput(prfOutput: Uint8Array): Promise<{ gAddress: string; evmAddress: string }> {
+export async function addressesFromPrfOutput(prfOutput: Uint8Array): Promise<{ gAddress: string }> {
   const seed = await hkdfDerive(prfOutput);
   const gAddress = Keypair.fromRawEd25519Seed(Buffer.from(seed)).publicKey();
-  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
   seed.fill(0);
-  return { gAddress, evmAddress };
+  return { gAddress };
 }
 
 // Result of creating a PRF credential, INCLUDING the raw PRF output. The PRF
-// output is the master seed (it derives both chains); callers that don't need it
+// output is the master seed; callers that don't need it
 // — like registerPRFWallet — must zero it. Recovery enrollment needs it to split.
 export interface PRFCredentialWithSeed extends PRFWalletCredential {
   prfOutput: Uint8Array;
@@ -125,10 +122,6 @@ export async function createPRFCredential(): Promise<PRFCredentialWithSeed> {
   const keypair = Keypair.fromRawEd25519Seed(Buffer.from(seed));
   const gAddress = keypair.publicKey();
 
-  // Same passkey also yields the EVM address (secp256k1) from this one PRF
-  // output, so picking BotChain at creation doesn't need a second tap.
-  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
-
   const publicKey = toBase64url(
     extractCosePublicKey((credential.response as AuthenticatorAttestationResponse).attestationObject),
   );
@@ -141,7 +134,6 @@ export async function createPRFCredential(): Promise<PRFCredentialWithSeed> {
     credentialId: toBase64url(new Uint8Array(credential.rawId)),
     publicKey,
     gAddress,
-    evmAddress,
     prfOutput,
   };
 }
@@ -159,19 +151,17 @@ export async function registerPRFWallet(): Promise<PRFWalletCredential> {
  * Sign in with PRF — derives the G address from the passkey.
  * Returns the G address. Caller should verify the address matches the stored wallet.
  */
-export async function signInWithPRF(credentialId?: string): Promise<{ gAddress: string; evmAddress: string; credentialId: string }> {
+export async function signInWithPRF(credentialId?: string): Promise<{ gAddress: string; credentialId: string }> {
   // resolveMasterPrf returns the original seed even on a Google-adopted device
   // (it unwraps the stored blob), so the derived addresses are always correct.
   const { prfOutput, credentialId: credId } = await resolveMasterPrf(credentialId);
   const seed = await hkdfDerive(prfOutput);
 
   const gAddress = Keypair.fromRawEd25519Seed(Buffer.from(seed)).publicKey();
-  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
-
   seed.fill(0);
   prfOutput.fill(0);
 
-  return { gAddress, evmAddress, credentialId: credId };
+  return { gAddress, credentialId: credId };
 }
 
 /**

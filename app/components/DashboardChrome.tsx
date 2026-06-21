@@ -5,8 +5,8 @@ import Image from 'next/image';
 import RecoveryNudge from './RecoveryNudge';
 
 // Shared dashboard frame (sidebar, top bar, mobile header, account dropdown)
-// used by both the Stellar and EVM dashboards. Only the content differs per
-// chain — this keeps the frame in one place so it can't drift.
+// used by the Stellar dashboard. Keeping the frame in one place means the
+// content can change without the chrome drifting.
 
 const dicebearUrl = (seed: string, size: number) =>
   `https://api.dicebear.com/9.x/rings/svg?seed=${encodeURIComponent(seed)}&size=${size}`;
@@ -29,14 +29,11 @@ export interface DashboardChromeProps {
   walletAddress: string;
   /** Value shown on the right of the account dropdown (e.g. "$12.34" or "5 BOT"). */
   accountValue: string;
-  /** Label for the chain-switch item (e.g. "Switch to BOT Chain"). */
-  switchChainLabel: string;
   copied: boolean;
   showSwap?: boolean;
   activeNav: string;
   onNav: (id: string) => void;
   onAction: (action: 'send' | 'receive' | 'swap') => void;
-  onSwitchChain: () => void;
   onDisconnect: () => void;
   onCopy: () => void;
   /** Balance headline, rendered at the top of the scrollable area. */
@@ -48,8 +45,8 @@ export interface DashboardChromeProps {
 }
 
 export default function DashboardChrome({
-  walletAddress, accountValue, switchChainLabel, copied, showSwap,
-  activeNav, onNav, onAction, onSwitchChain, onDisconnect, onCopy,
+  walletAddress, accountValue, copied, showSwap,
+  activeNav, onNav, onAction, onDisconnect, onCopy,
   headline, children, overlays,
 }: DashboardChromeProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -84,10 +81,6 @@ export default function DashboardChrome({
         </div>
       </div>
       <div className="px-3 pb-3 flex flex-col gap-1">
-        <button onClick={() => { setDropdownOpen(false); onSwitchChain(); }} className="flex items-center justify-between px-3 py-3 rounded-xl hover:bg-slate-800/50 transition-colors">
-          <span className="text-white text-sm font-medium">{switchChainLabel}</span>
-          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m4 6H4m0 0l4 4m-4-4l4-4" /></svg>
-        </button>
         <a href="/settings" onClick={() => setDropdownOpen(false)} className="flex items-center justify-between px-3 py-3 rounded-xl bg-slate-800 hover:bg-slate-700/80 transition-colors">
           <span className="text-white text-sm font-medium">Settings</span>
           <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>

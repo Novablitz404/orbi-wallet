@@ -77,7 +77,7 @@ const SWAP_SLIPPAGE = 0.01;
 // opens — it isn't spent or sent anywhere, just no longer freely spendable.
 const TRUSTLINE_RESERVE_XLM = '0.5';
 
-export default function StellarDashboard({ onSwitchChain }: { onSwitchChain: () => void }) {
+export default function StellarDashboard() {
   const router = useRouter();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [xlmBalance, setXlmBalance] = useState<string | null>(null);
@@ -278,7 +278,6 @@ export default function StellarDashboard({ onSwitchChain }: { onSwitchChain: () 
   }
 
   useEffect(() => {
-    // BotChain sessions belong on the EVM dashboard, not this Stellar one.
     const addr = orbi.getAddress();
     if (!addr) { router.replace('/'); return; }
     setWalletAddress(addr);
@@ -888,13 +887,11 @@ export default function StellarDashboard({ onSwitchChain }: { onSwitchChain: () 
     <DashboardChrome
       walletAddress={walletAddress}
       accountValue={usdValue !== null ? `$${usdValue.toFixed(2)}` : '—'}
-      switchChainLabel="Switch to BOT Chain"
       copied={copied}
       showSwap
       activeNav={activeNav}
       onNav={(id) => setActiveNav(id)}
       onAction={(a) => openPanel(a)}
-      onSwitchChain={onSwitchChain}
       onDisconnect={disconnect}
       onCopy={copyAddress}
       headline={

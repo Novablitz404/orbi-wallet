@@ -22,40 +22,19 @@ export function setNetworkPreference(network: StellarNetwork): void {
   localStorage.setItem(NETWORK_KEY, network);
 }
 
-// ── chain preference (Stellar ↔ BotChain) ──
-//
-// Which chain the wallet is currently operating on. One passkey derives a
-// deterministic address per chain (Stellar G-address via Ed25519, BotChain
-// 0x-address via secp256k1), so switching chains never needs a new passkey —
-// just a re-derivation. Persisted client-side like the network preference.
-
-const CHAIN_KEY = 'orbi_chain';
-
-export type Chain = 'stellar' | 'botchain';
-
-export function getChainPreference(): Chain {
-  if (typeof window === 'undefined') return 'stellar';
-  const stored = localStorage.getItem(CHAIN_KEY);
-  return stored === 'botchain' || stored === 'stellar' ? stored : 'stellar';
-}
-
-export function setChainPreference(chain: Chain): void {
-  localStorage.setItem(CHAIN_KEY, chain);
-}
+export type Chain = 'stellar';
 
 const WALLET_KEY = 'orbi_wallet';
 
 export interface StoredWallet {
-  // The active chain's address. Kept as the primary field so every existing
-  // (Stellar) page keeps working unchanged when chain === 'stellar'.
+  // The Stellar wallet address.
   walletAddress: string;
   credentialId: string;
   passkeyId: string;
   walletType?: 'smart' | 'prf-g';
-  // Which chain `walletAddress` belongs to. Absent ⇒ legacy Stellar wallet.
+  // Which chain `walletAddress` belongs to. Orbi is Stellar-only for now.
   chain?: Chain;
-  // All per-chain addresses derived from this passkey so far, so switching
-  // chains can show the right address without forcing a re-derive.
+  // Kept for tolerant reads of older sessions; new wallets only store Stellar.
   addresses?: Partial<Record<Chain, string>>;
   // COSE public key (base64url) captured at registration — the recovery server
   // needs it to verify assertions. Absent ⇒ legacy wallet (re-create to enable).
@@ -90,8 +69,8 @@ export function setSdkSession(wallet: StoredWallet): void {
     walletAddress: wallet.walletAddress,
     credentialId: wallet.credentialId,
     passkeyId: wallet.passkeyId,
-    chain: wallet.chain ?? 'stellar',
-    addresses: wallet.addresses ?? {},
+    chain: 'stellar',
+    addresses: { stellar: wallet.walletAddress },
   }));
 }
 
@@ -112,21 +91,6 @@ export function setWalletRecovery(recovery: { userId: string; googleLinked: bool
   const w = loadWallet();
   if (!w) return;
   saveWallet({ ...w, recovery });
-}
-
-// Make `chain` the active chain: point walletAddress at its derived address,
-// remember the address in the per-chain map, and persist the chain preference.
-// Used by the create / sign-in flows once an address has been derived.
-export function activateChain(wallet: StoredWallet, chain: Chain, address: string): StoredWallet {
-  const next: StoredWallet = {
-    ...wallet,
-    walletAddress: address,
-    chain,
-    addresses: { ...wallet.addresses, [chain]: address },
-  };
-  saveWallet(next);
-  setChainPreference(chain);
-  return next;
 }
 
 // ── dApp connections (local — not synced across devices) ──

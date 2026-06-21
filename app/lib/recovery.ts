@@ -1,8 +1,8 @@
 // Client-side recovery (A+B) — runs ONLY on the keys (RP) origin, where the PRF
 // seed legitimately exists. See docs/recovery-server-spec.md.
 //
-// Model: the master seed (the raw PRF output, which derives BOTH the Stellar and
-// EVM keys) is split with an audited Shamir library into a Server share and a
+// Model: the master seed (the raw PRF output, which derives the Stellar key) is
+// split with an audited Shamir library into a Server share and a
 // Cloud share (B). The passkey itself reconstructs the seed directly from PRF —
 // that is the everyday "share A" path and never needs this module. So the
 // persisted recovery is a Server + B split (2-of-2), which is equivalent in
@@ -87,7 +87,6 @@ export async function enrollRecovery(opts: {
   credentialId: string;    // base64url
   publicKey: string;       // base64url COSE key
   stellarAddress: string;
-  evmAddress: string;
   userId?: string;
 }): Promise<EnrollResult> {
   // 2-of-2 split: [serverShare, cloudB]. (Passkey = the PRF-direct "share A".)
@@ -106,7 +105,6 @@ export async function enrollRecovery(opts: {
       body: JSON.stringify({
         user_id: opts.userId,
         stellar_address: opts.stellarAddress,
-        evm_address: opts.evmAddress,
         passkey: { credential_id: opts.credentialId, public_key: opts.publicKey },
         server_share: toB64(serverShare),
         kb_key: toB64(kbKey),
@@ -196,7 +194,6 @@ export interface AdoptedWallet {
   credentialId: string;  // NEW local passkey
   publicKey: string;     // NEW passkey COSE key
   gAddress: string;
-  evmAddress: string;
   wrappedSeed: string;   // original seed, wrapped by the new passkey
 }
 
@@ -210,12 +207,12 @@ export interface AdoptedWallet {
 export async function recoverAndAdoptViaGoogle(): Promise<AdoptedWallet> {
   const originalPrf = await reconstructViaGoogle();
   try {
-    const { gAddress, evmAddress } = await addressesFromPrfOutput(originalPrf);
+    const { gAddress } = await addressesFromPrfOutput(originalPrf);
     // Register a new passkey on this device to bind the recovered wallet.
     const cred = await createPRFCredential();
     try {
       const wrappedSeed = await wrapSeedForDevice(originalPrf, cred.prfOutput);
-      return { credentialId: cred.credentialId, publicKey: cred.publicKey, gAddress, evmAddress, wrappedSeed };
+      return { credentialId: cred.credentialId, publicKey: cred.publicKey, gAddress, wrappedSeed };
     } finally {
       cred.prfOutput.fill(0);
     }
@@ -227,13 +224,10 @@ export async function recoverAndAdoptViaGoogle(): Promise<AdoptedWallet> {
 /** Confirm a reconstructed seed yields the wallet's known addresses. */
 export async function verifyRecovered(
   prfOutput: Uint8Array,
-  expected: { gAddress: string; evmAddress: string },
+  expected: { gAddress: string },
 ): Promise<boolean> {
   const got = await addressesFromPrfOutput(prfOutput);
-  return (
-    got.gAddress === expected.gAddress &&
-    got.evmAddress.toLowerCase() === expected.evmAddress.toLowerCase()
-  );
+  return got.gAddress === expected.gAddress;
 }
 
 // ── 9.2: Google sign-in + Drive share B ──────────────────────────────────────
@@ -290,7 +284,6 @@ export async function setupRecoveryWithGoogle(opts: {
   credentialId: string;
   publicKey: string;
   stellarAddress: string;
-  evmAddress: string;
   userId?: string;
 }): Promise<{ userId: string }> {
   const { prfOutput } = await getPrfOutputFromAssertion(opts.credentialId);
@@ -300,7 +293,6 @@ export async function setupRecoveryWithGoogle(opts: {
       credentialId: opts.credentialId,
       publicKey: opts.publicKey,
       stellarAddress: opts.stellarAddress,
-      evmAddress: opts.evmAddress,
       userId: opts.userId,
     });
     await linkGoogleAndBackup({ userId, credentialId: opts.credentialId, encryptedB });

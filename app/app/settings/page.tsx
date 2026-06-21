@@ -34,15 +34,14 @@ export default function SettingsPage() {
   }
 
   async function setupRecovery() {
-    if (!wallet?.publicKey || !wallet.addresses?.stellar || !wallet.addresses?.botchain) return;
+    if (!wallet?.publicKey || !wallet.walletAddress) return;
     setRecoveryError('');
     setRecoveryBusy(true);
     try {
       const { userId } = await setupRecoveryWithGoogle({
         credentialId: wallet.credentialId,
         publicKey: wallet.publicKey,
-        stellarAddress: wallet.addresses.stellar,
-        evmAddress: wallet.addresses.botchain,
+        stellarAddress: wallet.walletAddress,
         userId: wallet.recovery?.userId,
       });
       setWalletRecovery({ userId, googleLinked: true });
