@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import { Analytics } from "@vercel/analytics/next";
-import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import BufferPolyfill from "../components/BufferPolyfill";
+import ConditionalAnalytics from "../components/ConditionalAnalytics";
 
 // Space Grotesk for headings/balances/display text, JetBrains Mono for
 // addresses/hashes/amounts — see globals.css for how these wire into Tailwind.
@@ -35,8 +34,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-[#020817]">
         <BufferPolyfill />
         {children}
-        <Analytics />
-        <SpeedInsights />
+        <ConditionalAnalytics />
       </body>
     </html>
   );
