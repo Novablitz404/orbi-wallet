@@ -327,21 +327,44 @@ export default function StellarDashboard() {
       .catch(() => {});
   }, [router]);
 
-  // Keep balances current without a manual page refresh: re-fetch on a short
-  // interval and whenever the tab regains focus. This is what makes a freshly
-  // funded account or a just-received token appear on its own — the single
-  // mount fetch can land before Horizon has indexed the change. Only fires
-  // while the tab is visible, so a backgrounded dashboard isn't polling Horizon.
+  // Keep balances current without a manual page refresh — and without polling.
+  // Stream the account's effects (credits, debits, trustline changes) over
+  // Horizon's Server-Sent Events; when one lands we refetch the authoritative
+  // balances. This is push, not poll: Horizon only sends when the account
+  // actually changes, so a received token / funded account shows up on its own.
   useEffect(() => {
     if (!walletAddress) return;
-    const tick = () => { if (document.visibilityState === 'visible') refreshBalances(walletAddress); };
-    const id = setInterval(tick, 15000);
-    window.addEventListener('focus', tick);
-    document.addEventListener('visibilitychange', tick);
+
+    // Debounce: a single transaction can emit several effects in one ledger, so
+    // coalesce them into one balance refetch.
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (debounce) return;
+      debounce = setTimeout(() => { debounce = null; refreshBalances(walletAddress); }, 400);
+    };
+
+    // cursor=now → only future effects; order=asc is required for streaming.
+    // EventSource sets Accept: text/event-stream and auto-reconnects (resuming
+    // from the last event id), so we don't miss changes across brief drops.
+    const es = new EventSource(`${HORIZON_URL}/accounts/${walletAddress}/effects?cursor=now&order=asc`);
+    es.onmessage = (e) => {
+      // Effect records are JSON objects; Horizon's "hello"/"byebye" keepalives
+      // are quoted strings, so a leading '{' filters to real changes only.
+      if (e.data?.startsWith('{')) scheduleRefresh();
+    };
+    // EventSource reconnects itself on error; nothing to do here.
+
+    // Safety net: refetch on tab focus, in case the stream was paused while the
+    // tab was backgrounded or the account didn't exist yet when it opened.
+    const onFocus = () => { if (document.visibilityState === 'visible') refreshBalances(walletAddress); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+
     return () => {
-      clearInterval(id);
-      window.removeEventListener('focus', tick);
-      document.removeEventListener('visibilitychange', tick);
+      es.close();
+      if (debounce) clearTimeout(debounce);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
     };
   }, [walletAddress]);
 
