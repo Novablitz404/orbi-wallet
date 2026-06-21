@@ -1,6 +1,7 @@
 import { createWalletClient, createPublicClient, http, type Hex, type LocalAccount, type TypedDataDefinition } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { getEvmChain } from './chains';
+import { resolveMasterPrf } from './seed';
 
 // Same PRF eval salt as the Stellar wallet, so the *same passkey* produces the
 // same PRF output (lib/prf-wallet.ts uses 'orbi-stellar-v1'). The chain split
@@ -110,7 +111,9 @@ async function withEvmAccount<T>(
   expectedAddress: string,
   fn: (account: LocalAccount) => Promise<T>,
 ): Promise<T> {
-  const { prfOutput } = await getPrfOutput(credentialId);
+  // resolveMasterPrf handles adopted devices (unwraps the original seed); on
+  // original devices it returns the passkey PRF directly.
+  const { prfOutput } = await resolveMasterPrf(credentialId);
   const seed = await hkdfDerive(prfOutput);
   const account = privateKeyToAccount(toHex(seed));
 

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getConnections, removeConnection, getNetworkPreference, type StoredConnection } from '../../lib/storage';
+import { getConnections, removeConnection, getNetworkPreference, loadWallet, setWalletRecovery, type StoredConnection, type StoredWallet } from '../../lib/storage';
+import { setupRecoveryWithGoogle } from '../../lib/recovery';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import BackButton from '../../components/BackButton';
 
@@ -14,18 +15,43 @@ export default function SettingsPage() {
   const router = useRouter();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [connections, setConnections] = useState<StoredConnection[]>([]);
+  const [wallet, setWallet] = useState<StoredWallet | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
 
   useEffect(() => {
     const addr = orbi.getAddress();
     if (!addr) { router.replace('/'); return; }
     setWalletAddress(addr);
     setConnections(getConnections(addr));
+    setWallet(loadWallet());
   }, [router]);
 
   function revoke(origin: string) {
     if (!walletAddress) return;
     removeConnection(walletAddress, origin);
     setConnections(prev => prev.filter(c => c.origin !== origin));
+  }
+
+  async function setupRecovery() {
+    if (!wallet?.publicKey || !wallet.addresses?.stellar || !wallet.addresses?.botchain) return;
+    setRecoveryError('');
+    setRecoveryBusy(true);
+    try {
+      const { userId } = await setupRecoveryWithGoogle({
+        credentialId: wallet.credentialId,
+        publicKey: wallet.publicKey,
+        stellarAddress: wallet.addresses.stellar,
+        evmAddress: wallet.addresses.botchain,
+        userId: wallet.recovery?.userId,
+      });
+      setWalletRecovery({ userId, googleLinked: true });
+      setWallet(loadWallet());
+    } catch (err: unknown) {
+      setRecoveryError(err instanceof Error ? err.message : 'Could not set up recovery');
+    } finally {
+      setRecoveryBusy(false);
+    }
   }
 
   if (!walletAddress) return null;
@@ -41,6 +67,47 @@ export default function SettingsPage() {
       <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-4 mb-4">
         <p className="text-slate-400 text-xs mb-1">Your wallet</p>
         <p className="text-white font-mono text-xs break-all">{walletAddress}</p>
+      </div>
+
+      {/* Recovery */}
+      <div className="mb-4">
+        <h2 className="text-slate-400 text-sm font-medium mb-2 px-1">Recovery</h2>
+        <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-4">
+          {wallet?.recovery?.googleLinked ? (
+            <div className="flex items-start gap-3">
+              <span className="text-green-400 text-lg leading-none mt-0.5">✓</span>
+              <div>
+                <p className="text-white text-sm font-medium">Protected with Google</p>
+                <p className="text-slate-500 text-xs mt-0.5">
+                  An encrypted backup is stored in your Google Drive. You can recover this wallet on a
+                  new device with Google sign-in.
+                </p>
+              </div>
+            </div>
+          ) : wallet?.publicKey ? (
+            <div className="flex flex-col gap-3">
+              <div>
+                <p className="text-white text-sm font-medium">Set up wallet recovery</p>
+                <p className="text-slate-500 text-xs mt-0.5">
+                  Link Google and store an encrypted backup in your own Drive, so you can get back in
+                  if you lose this device. Non-custodial — your passkey stays your everyday sign-in.
+                </p>
+              </div>
+              {recoveryError && <p className="text-red-400 text-xs">{recoveryError}</p>}
+              <button
+                onClick={setupRecovery}
+                disabled={recoveryBusy}
+                className="self-start px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+              >
+                {recoveryBusy ? 'Setting up… check the prompts' : 'Set up recovery with Google'}
+              </button>
+            </div>
+          ) : (
+            <p className="text-slate-500 text-sm">
+              Recovery isn&apos;t available for this wallet. Re-create your wallet to enable it.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Connected dApps */}

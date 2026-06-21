@@ -17,7 +17,8 @@
 import { split, combine } from 'shamir-secret-sharing';
 import _sodium from 'libsodium-wrappers';
 import { startAuthentication } from '@simplewebauthn/browser';
-import { addressesFromPrfOutput } from './prf-wallet';
+import { addressesFromPrfOutput, getPrfOutputFromAssertion, createPRFCredential } from './prf-wallet';
+import { wrapSeedForDevice } from './seed';
 import { requestGoogleIdToken, requestDriveAccessToken } from './google-oauth';
 import { writeAppData, readAppData } from './drive';
 
@@ -191,6 +192,38 @@ export async function reconstructViaPasskey(opts: {
   }
 }
 
+export interface AdoptedWallet {
+  credentialId: string;  // NEW local passkey
+  publicKey: string;     // NEW passkey COSE key
+  gAddress: string;
+  evmAddress: string;
+  wrappedSeed: string;   // original seed, wrapped by the new passkey
+}
+
+/**
+ * Sign in on a device with NO original passkey: recover the seed via Google,
+ * then ADOPT this device — register a new local passkey whose PRF wraps the
+ * recovered seed. The wallet keeps the same address; this device can now sign
+ * locally (resolveMasterPrf unwraps on each signature). No passkey prompt is
+ * needed for the recovery itself, only to create the new local passkey.
+ */
+export async function recoverAndAdoptViaGoogle(): Promise<AdoptedWallet> {
+  const originalPrf = await reconstructViaGoogle();
+  try {
+    const { gAddress, evmAddress } = await addressesFromPrfOutput(originalPrf);
+    // Register a new passkey on this device to bind the recovered wallet.
+    const cred = await createPRFCredential();
+    try {
+      const wrappedSeed = await wrapSeedForDevice(originalPrf, cred.prfOutput);
+      return { credentialId: cred.credentialId, publicKey: cred.publicKey, gAddress, evmAddress, wrappedSeed };
+    } finally {
+      cred.prfOutput.fill(0);
+    }
+  } finally {
+    originalPrf.fill(0);
+  }
+}
+
 /** Confirm a reconstructed seed yields the wallet's known addresses. */
 export async function verifyRecovered(
   prfOutput: Uint8Array,
@@ -246,6 +279,35 @@ export async function linkGoogleAndBackup(opts: {
   // 2. Drive token stays in the browser; write encrypted B to appDataFolder.
   const driveToken = await requestDriveAccessToken();
   await writeAppData(driveToken, SHARE_B_FILE, JSON.stringify(opts.encryptedB));
+}
+
+/**
+ * One-shot "enable recovery": derive the seed (passkey), split + store the Server
+ * share + K_B, link Google, and back up encrypted share B to Drive. Used by the
+ * post-creation nudge and Settings. Returns the recovery server userId.
+ */
+export async function setupRecoveryWithGoogle(opts: {
+  credentialId: string;
+  publicKey: string;
+  stellarAddress: string;
+  evmAddress: string;
+  userId?: string;
+}): Promise<{ userId: string }> {
+  const { prfOutput } = await getPrfOutputFromAssertion(opts.credentialId);
+  try {
+    const { userId, encryptedB } = await enrollRecovery({
+      prfOutput,
+      credentialId: opts.credentialId,
+      publicKey: opts.publicKey,
+      stellarAddress: opts.stellarAddress,
+      evmAddress: opts.evmAddress,
+      userId: opts.userId,
+    });
+    await linkGoogleAndBackup({ userId, credentialId: opts.credentialId, encryptedB });
+    return { userId };
+  } finally {
+    prfOutput.fill(0);
+  }
 }
 
 /**

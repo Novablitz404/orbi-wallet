@@ -1,6 +1,7 @@
 import { Keypair, TransactionBuilder, Networks } from '@stellar/stellar-base';
 import { decode as cborDecode, Decoder, Encoder } from 'cbor-x';
 import { deriveEvmAddressFromPrf } from './evm-wallet';
+import { resolveMasterPrf } from './seed';
 
 // Salt used for PRF evaluation — must never change (changing it changes the derived G address).
 const PRF_SALT = new TextEncoder().encode('orbi-stellar-v1');
@@ -159,13 +160,37 @@ export async function registerPRFWallet(): Promise<PRFWalletCredential> {
  * Returns the G address. Caller should verify the address matches the stored wallet.
  */
 export async function signInWithPRF(credentialId?: string): Promise<{ gAddress: string; evmAddress: string; credentialId: string }> {
+  // resolveMasterPrf returns the original seed even on a Google-adopted device
+  // (it unwraps the stored blob), so the derived addresses are always correct.
+  const { prfOutput, credentialId: credId } = await resolveMasterPrf(credentialId);
+  const seed = await hkdfDerive(prfOutput);
+
+  const gAddress = Keypair.fromRawEd25519Seed(Buffer.from(seed)).publicKey();
+  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
+
+  seed.fill(0);
+  prfOutput.fill(0);
+
+  return { gAddress, evmAddress, credentialId: credId };
+}
+
+/**
+ * Run a passkey assertion and return the raw PRF output (the master seed) plus
+ * the credential id. Used to set up / re-enroll recovery, which needs the seed
+ * to split. Caller MUST zero `prfOutput` after use.
+ */
+export async function getPrfOutputFromAssertion(
+  credentialId?: string,
+): Promise<{ prfOutput: Uint8Array; credentialId: string }> {
   const credIdBytes = credentialId ? fromBase64url(credentialId) : undefined;
 
   const assertion = await navigator.credentials.get({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       rpId: getRpId(),
-      allowCredentials: credIdBytes ? [{ id: credIdBytes.buffer.slice(credIdBytes.byteOffset, credIdBytes.byteOffset + credIdBytes.byteLength) as ArrayBuffer, type: 'public-key' as const }] : [],
+      allowCredentials: credIdBytes
+        ? [{ id: credIdBytes.buffer.slice(credIdBytes.byteOffset, credIdBytes.byteOffset + credIdBytes.byteLength) as ArrayBuffer, type: 'public-key' as const }]
+        : [],
       userVerification: 'required',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       extensions: { prf: { eval: { first: PRF_SALT } } } as any,
@@ -174,24 +199,10 @@ export async function signInWithPRF(credentialId?: string): Promise<{ gAddress: 
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const prf = (assertion.getClientExtensionResults() as any).prf;
-  if (!prf?.results?.first) {
-    throw new Error('PRF not available on this device/browser');
-  }
-
-  const prfOutput = new Uint8Array(prf.results.first as ArrayBuffer);
-  const seed = await hkdfDerive(prfOutput);
-
-  const keypair = Keypair.fromRawEd25519Seed(Buffer.from(seed));
-  const gAddress = keypair.publicKey();
-
-  const evmAddress = await deriveEvmAddressFromPrf(prfOutput);
-
-  seed.fill(0);
-  prfOutput.fill(0);
+  if (!prf?.results?.first) throw new Error('PRF not available on this device/browser');
 
   return {
-    gAddress,
-    evmAddress,
+    prfOutput: new Uint8Array(prf.results.first as ArrayBuffer),
     credentialId: toBase64url(new Uint8Array(assertion.rawId)),
   };
 }
@@ -207,26 +218,8 @@ export async function signTransactionWithPRF(
   network: 'testnet' | 'mainnet',
   expectedAddress: string,
 ): Promise<string> {
-  const credIdBytes = fromBase64url(credentialId);
-
-  const assertion = await navigator.credentials.get({
-    publicKey: {
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      rpId: getRpId(),
-      allowCredentials: [{ id: credIdBytes.buffer.slice(credIdBytes.byteOffset, credIdBytes.byteOffset + credIdBytes.byteLength) as ArrayBuffer, type: 'public-key' as const }],
-      userVerification: 'required',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      extensions: { prf: { eval: { first: PRF_SALT } } } as any,
-    },
-  }) as PublicKeyCredential;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const prf = (assertion.getClientExtensionResults() as any).prf;
-  if (!prf?.results?.first) {
-    throw new Error('PRF not available — cannot sign transaction');
-  }
-
-  const prfOutput = new Uint8Array(prf.results.first as ArrayBuffer);
+  // resolveMasterPrf handles adopted (Google-recovered) devices transparently.
+  const { prfOutput } = await resolveMasterPrf(credentialId);
   const seed = await hkdfDerive(prfOutput);
 
   const keypair = Keypair.fromRawEd25519Seed(Buffer.from(seed));

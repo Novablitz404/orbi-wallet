@@ -6,6 +6,7 @@ import { formatEther, parseEther } from 'viem';
 import { OrbiClient } from '@orbi-wallet/sdk';
 import DashboardChrome from '../../components/DashboardChrome';
 import { getNetworkPreference, setNetworkPreference } from '../../lib/storage';
+import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { getEvmBalance } from '../../lib/evm-wallet';
 import { getEvmChain, defaultEvmChainId } from '../../lib/chains';
 
@@ -107,7 +108,11 @@ export default function EvmDashboard({ onSwitchChain }: { onSwitchChain: () => v
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
-  function disconnect() { orbi.disconnect(); router.replace('/'); }
+  async function disconnect() {
+    await fullWalletSignOut();
+    orbi.disconnect();
+    router.replace('/');
+  }
 
   function handlePreview() {
     setSendError('');

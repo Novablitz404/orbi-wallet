@@ -5,8 +5,9 @@ import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import BackButton from '../../components/BackButton';
 import ChainSelector from '../../components/ChainSelector';
-import { saveWallet, loadWallet, getNetworkPreference, setChainPreference, getChainPreference, type Chain, type StoredWallet } from '../../lib/storage';
+import { saveWallet, loadWallet, getNetworkPreference, setChainPreference, getChainPreference, setSdkSession, type Chain, type StoredWallet } from '../../lib/storage';
 import { signInWithPRF } from '../../lib/prf-wallet';
+import { recoverAndAdoptViaGoogle } from '../../lib/recovery';
 
 const HORIZON_URL = getNetworkPreference() === 'mainnet'
   ? 'https://horizon.stellar.org'
@@ -15,6 +16,7 @@ const HORIZON_URL = getNetworkPreference() === 'mainnet'
 export default function SignInPage() {
   const router = useRouter();
   const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [googleStatus, setGoogleStatus] = useState<'idle' | 'loading'>('idle');
   const [error, setError] = useState('');
   const [chain, setChain] = useState<Chain>('stellar');
 
@@ -49,11 +51,42 @@ export default function SignInPage() {
         addresses: { stellar: gAddress, botchain: evmAddress },
       };
       saveWallet(wallet);
+      setSdkSession(wallet);
       setChainPreference(chain);
       router.replace('/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign in failed');
       setStatus('error');
+    }
+  }
+
+  async function handleGoogleSignIn() {
+    setGoogleStatus('loading');
+    setError('');
+    try {
+      // No passkey on this device → recover via Google and adopt the device
+      // (registers a local passkey that wraps the recovered seed).
+      const { credentialId, publicKey, gAddress, evmAddress, wrappedSeed } = await recoverAndAdoptViaGoogle();
+      const address = chain === 'stellar' ? gAddress : evmAddress;
+      const wallet: StoredWallet = {
+        walletAddress: address,
+        credentialId,
+        passkeyId: '',
+        walletType: 'prf-g',
+        chain,
+        addresses: { stellar: gAddress, botchain: evmAddress },
+        publicKey,
+        adopted: { wrappedSeed },
+        recovery: { userId: '', googleLinked: true },
+      };
+      saveWallet(wallet);
+      setSdkSession(wallet);
+      setChainPreference(chain);
+      router.replace('/dashboard');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Google sign in failed');
+      setStatus('error');
+      setGoogleStatus('idle');
     }
   }
 
@@ -91,6 +124,30 @@ export default function SignInPage() {
             'Sign in with passkey'
           )}
         </button>
+
+        <div className="flex items-center gap-3 py-1">
+          <div className="h-px flex-1 bg-slate-700" />
+          <span className="text-slate-500 text-xs">or</span>
+          <div className="h-px flex-1 bg-slate-700" />
+        </div>
+
+        <button
+          onClick={handleGoogleSignIn}
+          disabled={googleStatus === 'loading' || status === 'loading'}
+          className="w-full py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold transition-colors flex items-center justify-center gap-2"
+        >
+          {googleStatus === 'loading' ? (
+            'Recovering… check the prompts'
+          ) : (
+            <>
+              <svg className="w-5 h-5" viewBox="0 0 24 24"><path fill="#fff" d="M12 11v2h5.5c-.2 1.2-1.5 3.5-5.5 3.5A5.5 5.5 0 1112 6.5c1.6 0 2.6.7 3.2 1.2l1.6-1.6C15.6 4.9 14 4 12 4a8 8 0 100 16c4.6 0 7.7-3.2 7.7-7.8 0-.5 0-.9-.1-1.2H12z"/></svg>
+              Sign in with Google
+            </>
+          )}
+        </button>
+        <p className="text-slate-600 text-xs text-center -mt-1">
+          No passkey on this device? Recover with the Google account you linked.
+        </p>
 
         {status === 'error' && (
           <p className="text-red-400 text-sm text-center">{error}</p>

@@ -57,13 +57,42 @@ export interface StoredWallet {
   // All per-chain addresses derived from this passkey so far, so switching
   // chains can show the right address without forcing a re-derive.
   addresses?: Partial<Record<Chain, string>>;
+  // COSE public key (base64url) captured at registration — the recovery server
+  // needs it to verify assertions. Absent ⇒ legacy wallet (re-create to enable).
+  publicKey?: string;
+  // A+B recovery state. Set once the user enables recovery (links Google +
+  // backs up share B to Drive). `userId` is the recovery server's id for this wallet.
+  recovery?: { userId: string; googleLinked: boolean };
+  // Set on a device that ADOPTED this wallet via Google recovery (no original
+  // passkey here). `credentialId` is a NEW local passkey whose PRF wraps the
+  // original seed; `wrappedSeed` is that ciphertext. Signing unwraps it to the
+  // original seed, so the address is unchanged. Absent ⇒ original device (PRF = seed).
+  adopted?: { wrappedSeed: string };
 }
 
 const SESSION_COOKIE = 'orbi_session';
+// The SDK (OrbiClient) keeps its own session under this localStorage key and the
+// dashboard/home read from it. The first-party pages normally write `orbi_wallet`
+// and rely on the SDK popup handshake to populate this — so direct (non-popup)
+// create / sign-in / recovery flows must mirror the session here themselves.
+const SDK_SESSION_KEY = 'orbi_session';
 
 export function saveWallet(wallet: StoredWallet): void {
   localStorage.setItem(WALLET_KEY, JSON.stringify(wallet));
   document.cookie = `${SESSION_COOKIE}=1; path=/; max-age=31536000; SameSite=Lax`;
+}
+
+// Mirror the wallet into the SDK session so the dashboard/home (which read via
+// the SDK) recognise the connection on the current chain.
+export function setSdkSession(wallet: StoredWallet): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(SDK_SESSION_KEY, JSON.stringify({
+    walletAddress: wallet.walletAddress,
+    credentialId: wallet.credentialId,
+    passkeyId: wallet.passkeyId,
+    chain: wallet.chain ?? 'stellar',
+    addresses: wallet.addresses ?? {},
+  }));
 }
 
 export function loadWallet(): StoredWallet | null {
@@ -74,7 +103,15 @@ export function loadWallet(): StoredWallet | null {
 
 export function clearWallet(): void {
   localStorage.removeItem(WALLET_KEY);
+  localStorage.removeItem(SDK_SESSION_KEY);
   document.cookie = `${SESSION_COOKIE}=; path=/; max-age=0`;
+}
+
+// Record that A+B recovery has been enabled for the current wallet.
+export function setWalletRecovery(recovery: { userId: string; googleLinked: boolean }): void {
+  const w = loadWallet();
+  if (!w) return;
+  saveWallet({ ...w, recovery });
 }
 
 // Make `chain` the active chain: point walletAddress at its derived address,
