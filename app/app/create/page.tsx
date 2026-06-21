@@ -57,14 +57,21 @@ export default function CreateWalletPage() {
       saveWallet(walletData);
       setWalletAddress(gAddress);
 
-      // Came from the connect popup (e.g. via the SDK) — loop back so
-      // connect's own "already signed in" branch records the permission,
-      // sends `orbi_connected`, and closes the popup.
       const origin = new URLSearchParams(window.location.search).get('origin');
+      // Fresh passkey with a captured public key and no recovery yet → worth
+      // offering the protect (recovery) step before finishing.
+      const protectable = !!publicKey && !walletData.recovery;
+
+      // Connect (SDK) flow: offer recovery FIRST, then loop back to /connect so
+      // the handshake completes (records the permission, sends `orbi_connected`,
+      // closes the popup). Non-protectable wallets loop back immediately.
       if (origin && !popupMode) {
-        const back = new URL(window.location.href);
-        back.pathname = '/connect';
-        window.location.href = back.toString();
+        if (protectable) {
+          setSetupData({ credentialId, publicKey: publicKey!, gAddress });
+          setStep('protect');
+        } else {
+          redirectToConnect();
+        }
         return;
       }
 
@@ -83,8 +90,8 @@ export default function CreateWalletPage() {
 
       // New wallet (fresh passkey, has a public key, not already protected) →
       // offer to set up recovery before sending them to the dashboard.
-      if (publicKey && !walletData.recovery) {
-        setSetupData({ credentialId, publicKey, gAddress });
+      if (protectable) {
+        setSetupData({ credentialId, publicKey: publicKey!, gAddress });
         setStep('protect');
       } else {
         setStep('done');
@@ -94,6 +101,21 @@ export default function CreateWalletPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  // Loop back to /connect to finish the dApp handshake (same window/popup).
+  function redirectToConnect() {
+    const back = new URL(window.location.href);
+    back.pathname = '/connect';
+    window.location.href = back.toString();
+  }
+
+  // Where to go after the protect step: a connect (SDK) flow loops back to
+  // finish the handshake; a direct flow lands on the success screen.
+  function leaveProtect() {
+    const origin = new URLSearchParams(window.location.search).get('origin');
+    if (origin && !popupMode) { redirectToConnect(); return; }
+    setStep('done');
   }
 
   async function handleSetupRecovery() {
@@ -108,7 +130,7 @@ export default function CreateWalletPage() {
       });
       setWalletRecovery({ userId, googleLinked: true });
       setRecoveryDone(true);
-      setStep('done');
+      leaveProtect();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not set up recovery');
     } finally {
@@ -206,7 +228,7 @@ export default function CreateWalletPage() {
                 )}
               </button>
               <button
-                onClick={() => setStep('done')}
+                onClick={leaveProtect}
                 disabled={loading}
                 className="w-full py-3 rounded-2xl text-slate-400 hover:text-slate-200 text-sm font-medium transition-colors disabled:opacity-50"
               >
