@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { signInWithPRF } from '../../lib/prf-wallet';
-import { loadWallet, saveWallet, addConnection, getNetworkPreference, type StoredWallet } from '../../lib/storage';
+import { loadWallet, saveWallet, setSdkSession, addConnection, getNetworkPreference, type StoredWallet } from '../../lib/storage';
 
 const HORIZON_URL = getNetworkPreference() === 'mainnet'
   ? 'https://horizon.stellar.org'
@@ -54,6 +54,10 @@ export default function ConnectPage() {
   function grantAndSend(w: StoredWallet, o: string, c: string, name: string) {
     setWalletAddress(w.walletAddress);
 
+    // Mirror into the SDK session for the Orbi-app origin too, so the user can
+    // open the wallet app (dashboard/settings) afterwards without re-signing in.
+    setSdkSession(w);
+
     if (o) addConnection(w.walletAddress, o, name);
 
     // BroadcastChannel + postMessage handshake — see OrbiClient.connect().
@@ -82,6 +86,10 @@ export default function ConnectPage() {
       }
 
       const w: StoredWallet = {
+        // Preserve recovery state (publicKey/recovery) — a passkey assertion
+        // can't re-derive the COSE public key, so rebuilding from scratch would
+        // silently disable recovery, matching the bug fixed in signin.
+        ...stored,
         walletAddress: gAddress,
         credentialId,
         passkeyId: '',
