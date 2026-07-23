@@ -77,7 +77,10 @@ Open [http://localhost:3000](http://localhost:3000). Note: creating/using a wall
 
 ## Team
 
-- Erich Jann Liwag — [@Novablitz404](https://github.com/Novablitz404)
+- Anjuvh Baldwin J. Yguinto
+  Rachel Joy P. Pacot
+
+Submission
 
 ## License
 
