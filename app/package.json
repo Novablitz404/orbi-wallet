@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:d1": "npx tsx lib/derivation.test.ts"
   },
   "dependencies": {
     "@orbi-wallet/sdk": "^0.2.2",
