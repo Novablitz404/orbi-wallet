@@ -198,3 +198,55 @@ export function saveCachedBalances(
   all[balancesCacheKey(walletAddress, network)] = { xlm, tokens, customAssets };
   localStorage.setItem(BALANCES_KEY, JSON.stringify(all));
 }
+
+// ── Contact Book (Saved Contacts) ──
+
+const CONTACTS_KEY = 'orbi_contacts';
+
+export interface Contact {
+  id: string;
+  name: string;
+  address: string;
+  memo?: string;
+  memoType?: 'text' | 'id';
+  createdAt: string;
+}
+
+export function getContacts(): Contact[] {
+  if (typeof window === 'undefined') return [];
+  const raw = localStorage.getItem(CONTACTS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveContact(data: Omit<Contact, 'id' | 'createdAt'>): Contact {
+  const contacts = getContacts();
+  const newContact: Contact = {
+    ...data,
+    id: `contact_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    createdAt: new Date().toISOString(),
+  };
+  const updated = [newContact, ...contacts];
+  localStorage.setItem(CONTACTS_KEY, JSON.stringify(updated));
+  return newContact;
+}
+
+export function updateContact(id: string, updates: Partial<Omit<Contact, 'id' | 'createdAt'>>): Contact[] {
+  const contacts = getContacts();
+  const updated = contacts.map(c => (c.id === id ? { ...c, ...updates } : c));
+  localStorage.setItem(CONTACTS_KEY, JSON.stringify(updated));
+  return updated;
+}
+
+export function removeContact(id: string): Contact[] {
+  const contacts = getContacts();
+  const updated = contacts.filter(c => c.id !== id);
+  localStorage.setItem(CONTACTS_KEY, JSON.stringify(updated));
+  return updated;
+}
+
