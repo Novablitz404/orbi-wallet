@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import DashboardChrome from '../../components/DashboardChrome';
-import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances, getNetworkPreference, setNetworkPreference } from '../../lib/storage';
+import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances, getNetworkPreference, setNetworkPreference, getContacts, saveContact, updateContact, removeContact, type Contact } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { Networks, Asset, TransactionBuilder, Operation, Account, Memo, StrKey, BASE_FEE } from '@stellar/stellar-base';
 import { OrbiClient } from '@orbi-wallet/sdk';
@@ -103,6 +103,106 @@ export default function StellarDashboard() {
   const [sendMemo, setSendMemo] = useState('');
   const [sendError, setSendError] = useState('');
   const [sending, setSending] = useState(false);
+
+  // Contact Book state
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [contactSearch, setContactSearch] = useState('');
+  const [contactModalOpen, setContactModalOpen] = useState(false);
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [contactNameInput, setContactNameInput] = useState('');
+  const [contactAddressInput, setContactAddressInput] = useState('');
+  const [contactMemoInput, setContactMemoInput] = useState('');
+  const [contactMemoTypeInput, setContactMemoTypeInput] = useState<'none' | 'text' | 'id'>('none');
+  const [contactError, setContactError] = useState('');
+  const [contactPickerOpen, setContactPickerOpen] = useState(false);
+
+  useEffect(() => {
+    setContacts(getContacts());
+  }, []);
+
+  function isValidStellarAddress(addr: string): boolean {
+    return StrKey.isValidEd25519PublicKey(addr) || StrKey.isValidContract(addr);
+  }
+
+  function resetContactModal() {
+    setEditingContact(null);
+    setContactNameInput('');
+    setContactAddressInput('');
+    setContactMemoInput('');
+    setContactMemoTypeInput('none');
+    setContactError('');
+  }
+
+  function openAddContactModal(initialAddress = '') {
+    resetContactModal();
+    if (initialAddress) setContactAddressInput(initialAddress);
+    setContactModalOpen(true);
+  }
+
+  function openEditContactModal(contact: Contact) {
+    setEditingContact(contact);
+    setContactNameInput(contact.name);
+    setContactAddressInput(contact.address);
+    setContactMemoInput(contact.memo || '');
+    setContactMemoTypeInput(contact.memoType || (contact.memo ? 'text' : 'none'));
+    setContactError('');
+    setContactModalOpen(true);
+  }
+
+  function handleSaveContact() {
+    const name = contactNameInput.trim();
+    const address = contactAddressInput.trim();
+    const memo = contactMemoInput.trim();
+
+    if (!name) {
+      setContactError('Please enter a contact name.');
+      return;
+    }
+    if (!address || !isValidStellarAddress(address)) {
+      setContactError('Please enter a valid Stellar address (starting with G or C).');
+      return;
+    }
+    if (memo && contactMemoTypeInput === 'id' && !/^\d+$/.test(memo)) {
+      setContactError('Memo ID must contain digits only.');
+      return;
+    }
+
+    if (editingContact) {
+      const updated = updateContact(editingContact.id, {
+        name,
+        address,
+        memo: memo || undefined,
+        memoType: contactMemoTypeInput !== 'none' ? contactMemoTypeInput : undefined,
+      });
+      setContacts(updated);
+    } else {
+      saveContact({
+        name,
+        address,
+        memo: memo || undefined,
+        memoType: contactMemoTypeInput !== 'none' ? contactMemoTypeInput : undefined,
+      });
+      setContacts(getContacts());
+    }
+
+    setContactModalOpen(false);
+    resetContactModal();
+  }
+
+  function handleDeleteContact(id: string) {
+    const updated = removeContact(id);
+    setContacts(updated);
+  }
+
+  function handleSelectContactForSend(contact: Contact) {
+    setSendTo(contact.address);
+    if (contact.memo) {
+      setSendMemo(contact.memo);
+      setSendMemoType(contact.memoType || 'text');
+    }
+    setContactPickerOpen(false);
+  }
+
   const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
   // True while what's on screen is last-known cached data, not yet confirmed
   // by a live Horizon read — drives the "Syncing…" hint so a stale figure is
@@ -1202,6 +1302,106 @@ export default function StellarDashboard() {
               </div>
             )
           )}
+
+          {activeNav === 'contacts' && (
+            <div className="flex flex-col gap-4">
+              {/* Header & Search */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800/50 border border-slate-700/50">
+                  <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                  <input
+                    value={contactSearch}
+                    onChange={e => setContactSearch(e.target.value)}
+                    placeholder="Search contacts by name or address..."
+                    className="flex-1 bg-transparent text-white text-sm outline-none placeholder-slate-500"
+                  />
+                  {contactSearch && (
+                    <button onClick={() => setContactSearch('')} className="text-slate-500 hover:text-slate-300 text-xs">
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() => openAddContactModal()}
+                  className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-sm transition-colors flex items-center justify-center gap-1.5 shrink-0"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg>
+                  Add Contact
+                </button>
+              </div>
+
+              {/* Contacts List */}
+              {contacts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 gap-3 bg-slate-900/40 rounded-2xl border border-slate-800">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-800 flex items-center justify-center text-slate-400">
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                    </svg>
+                  </div>
+                  <p className="text-slate-400 text-sm font-medium">No contacts saved yet</p>
+                  <p className="text-slate-600 text-xs text-center max-w-xs">Save addresses you send to frequently for easy one-tap transfers.</p>
+                  <button
+                    onClick={() => openAddContactModal()}
+                    className="mt-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition-colors"
+                  >
+                    + Add your first contact
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {contacts
+                    .filter(c =>
+                      c.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
+                      c.address.toLowerCase().includes(contactSearch.toLowerCase())
+                    )
+                    .map(c => (
+                      <div key={c.id} className="flex items-center justify-between p-4 rounded-2xl bg-slate-800/40 border border-slate-700/50 hover:bg-slate-800/70 transition-colors">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <img src={dicebearUrl(c.address, 36)} alt="" className="w-10 h-10 rounded-full shrink-0" />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-white text-sm font-semibold truncate">{c.name}</p>
+                              {c.memo && (
+                                <span className="px-1.5 py-0.5 rounded bg-slate-700 text-[10px] text-slate-300 font-mono shrink-0">
+                                  Memo
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-slate-400 text-xs font-mono truncate">{truncate(c.address)}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                          <button
+                            onClick={() => {
+                              openPanel('send');
+                              handleSelectContactForSend(c);
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-900 text-xs font-semibold transition-colors flex items-center gap-1"
+                          >
+                            Send
+                          </button>
+                          <button
+                            onClick={() => openEditContactModal(c)}
+                            title="Edit Contact"
+                            className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-700/60 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteContact(c.id)}
+                            title="Delete Contact"
+                            className="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-slate-700/60 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
       {/* ── Send/Receive slide panel ── */}
       {panelOpen && (
         <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setPanelOpen(false)} />
@@ -1288,7 +1488,7 @@ export default function StellarDashboard() {
               </div>
 
               {/* Recipient */}
-              <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/50 border border-slate-700/50">
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 relative">
                 <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 <input
                   value={sendTo}
@@ -1296,6 +1496,59 @@ export default function StellarDashboard() {
                   placeholder="To: G... or C..."
                   className="flex-1 bg-transparent text-white text-sm outline-none placeholder-slate-600 font-mono"
                 />
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setContactPickerOpen(o => !o)}
+                    title={contacts.length > 0 ? "Select from Contacts" : "No saved contacts"}
+                    className="p-1.5 rounded-lg bg-slate-700/50 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors flex items-center gap-1 text-xs"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                    </svg>
+                  </button>
+                  {contactPickerOpen && (
+                    <div className="absolute right-0 top-full mt-2 w-64 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-50 max-h-60 overflow-y-auto">
+                      <div className="p-2.5 border-b border-slate-800 flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-400">Saved Contacts</span>
+                        <button
+                          type="button"
+                          onClick={() => { setContactPickerOpen(false); openAddContactModal(sendTo); }}
+                          className="text-blue-400 hover:underline font-medium"
+                        >
+                          + New
+                        </button>
+                      </div>
+                      {contacts.length === 0 ? (
+                        <div className="p-4 text-center">
+                          <p className="text-slate-500 text-xs">No saved contacts yet.</p>
+                          <button
+                            type="button"
+                            onClick={() => { setContactPickerOpen(false); openAddContactModal(sendTo); }}
+                            className="mt-2 text-xs text-blue-400 font-medium hover:underline"
+                          >
+                            + Add a contact
+                          </button>
+                        </div>
+                      ) : (
+                        contacts.map(c => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => handleSelectContactForSend(c)}
+                            className="w-full px-3 py-2.5 flex items-center gap-2.5 hover:bg-slate-800 text-left transition-colors border-b border-slate-800/40 last:border-0"
+                          >
+                            <img src={dicebearUrl(c.address, 24)} alt="" className="w-6 h-6 rounded-full shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-white text-xs font-medium truncate">{c.name}</p>
+                              <p className="text-slate-500 text-[10px] font-mono truncate">{truncate(c.address)}</p>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Memo — collapsed by default; some destinations (exchanges,
@@ -1993,6 +2246,101 @@ export default function StellarDashboard() {
           </>
         )}
       </div>
+
+      {/* ── Add / Edit Contact Modal ── */}
+      {contactModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[90] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700/60 rounded-3xl w-full max-w-md p-6 shadow-2xl flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">
+                {editingContact ? 'Edit Contact' : 'Add New Contact'}
+              </h3>
+              <button
+                onClick={() => { setContactModalOpen(false); resetContactModal(); }}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {/* Contact Name */}
+              <div className="flex flex-col gap-1">
+                <label className="text-slate-400 text-xs font-medium">Contact Name</label>
+                <input
+                  value={contactNameInput}
+                  onChange={e => setContactNameInput(e.target.value)}
+                  placeholder="e.g. Alice Remittance"
+                  className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white text-sm outline-none placeholder-slate-600 focus:border-slate-500 transition-colors"
+                />
+              </div>
+
+              {/* Stellar Address */}
+              <div className="flex flex-col gap-1">
+                <label className="text-slate-400 text-xs font-medium">Stellar Address (G... or C...)</label>
+                <input
+                  value={contactAddressInput}
+                  onChange={e => setContactAddressInput(e.target.value.trim())}
+                  placeholder="GA5ZSEJYB37J..."
+                  className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white text-sm outline-none placeholder-slate-600 font-mono focus:border-slate-500 transition-colors"
+                />
+              </div>
+
+              {/* Optional Memo */}
+              <div className="flex flex-col gap-2 pt-1 border-t border-slate-800">
+                <div className="flex items-center justify-between">
+                  <label className="text-slate-400 text-xs font-medium">Default Memo (Optional)</label>
+                  <div className="flex gap-1 bg-slate-800 rounded-lg p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setContactMemoTypeInput('none')}
+                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${contactMemoTypeInput === 'none' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >None</button>
+                    <button
+                      type="button"
+                      onClick={() => setContactMemoTypeInput('text')}
+                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${contactMemoTypeInput === 'text' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >Text</button>
+                    <button
+                      type="button"
+                      onClick={() => setContactMemoTypeInput('id')}
+                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${contactMemoTypeInput === 'id' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >ID</button>
+                  </div>
+                </div>
+                {contactMemoTypeInput !== 'none' && (
+                  <input
+                    value={contactMemoInput}
+                    onChange={e => setContactMemoInput(e.target.value)}
+                    placeholder={contactMemoTypeInput === 'id' ? 'Numeric memo ID (e.g. 123456)' : 'Text memo (max 28 bytes)'}
+                    inputMode={contactMemoTypeInput === 'id' ? 'numeric' : 'text'}
+                    className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white text-sm outline-none placeholder-slate-600 font-mono focus:border-slate-500 transition-colors"
+                  />
+                )}
+              </div>
+
+              {contactError && <p className="text-red-400 text-xs mt-1">{contactError}</p>}
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => { setContactModalOpen(false); resetContactModal(); }}
+                className="flex-1 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-sm transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveContact}
+                className="flex-1 py-3 rounded-2xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-sm transition-colors"
+              >
+                {editingContact ? 'Save Changes' : 'Add Contact'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Toast notification ── */}
       {toast && (
