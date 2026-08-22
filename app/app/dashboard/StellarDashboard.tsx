@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import DashboardChrome from '../../components/DashboardChrome';
+import CryptoDashboard from '../../components/portfolio/CryptoDashboard';
 import { getConnections, type StoredConnection, loadCachedBalances, saveCachedBalances, getNetworkPreference, setNetworkPreference, getContacts, saveContact, updateContact, removeContact, type Contact } from '../../lib/storage';
 import { fullWalletSignOut } from '../../lib/walletSignOut';
 import { Networks, Asset, TransactionBuilder, Operation, Account, Memo, StrKey, BASE_FEE } from '@stellar/stellar-base';
@@ -1032,7 +1033,13 @@ export default function StellarDashboard() {
       showSwap
       activeNav={activeNav}
       onNav={(id) => setActiveNav(id)}
-      onAction={(a) => openPanel(a)}
+      onAction={(a) => {
+        if (a === 'magic-link') {
+          router.push('/send/link');
+        } else {
+          openPanel(a);
+        }
+      }}
       onDisconnect={disconnect}
       onCopy={copyAddress}
       headline={
@@ -1302,6 +1309,8 @@ export default function StellarDashboard() {
               </div>
             )
           )}
+
+          {activeNav === 'portfolio' && <CryptoDashboard />}
 
           {activeNav === 'contacts' && (
             <div className="flex flex-col gap-4">
